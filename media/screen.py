@@ -33,6 +33,61 @@ DEFAULT_MAX_WIDTH = 1024  # downscale wider screens to this before encoding
 DEFAULT_QUALITY = 70  # JPEG quality
 
 
+def _resolve_monitor(sct: Any, monitor: int) -> dict[str, Any]:
+    """Return the mss region for ``monitor``, falling back to a valid index."""
+    monitors = sct.monitors
+    if 0 <= monitor < len(monitors):
+        return dict(monitors[monitor])
+    return dict(monitors[1] if len(monitors) > 1 else monitors[0])
+
+
+def monitor_geometry(monitor: int = 1) -> dict[str, int]:
+    """Return ``{"left", "top", "width", "height"}`` for a monitor in pixels.
+
+    Used to map normalized computer-use coordinates onto the physical desktop.
+    """
+    import mss  # imported here so --help works without the dependency
+
+    with _mss_factory(mss)() as sct:
+        region = _resolve_monitor(sct, monitor)
+    return {
+        "left": int(region["left"]),
+        "top": int(region["top"]),
+        "width": int(region["width"]),
+        "height": int(region["height"]),
+    }
+
+
+def capture_jpeg(
+    monitor: int = 1,
+    max_width: int = DEFAULT_MAX_WIDTH,
+    quality: int = DEFAULT_QUALITY,
+) -> bytes:
+    """Grab a single frame as JPEG bytes, outside the streaming thread.
+
+    One-shot counterpart of ``ScreenCapture`` — used to push a fresh screenshot
+    to the model right after a computer-use action without waiting for the
+    next tick of the ambient 1 fps stream.
+    """
+    import mss
+    from PIL import Image
+
+    with _mss_factory(mss)() as sct:
+        region = _resolve_monitor(sct, monitor)
+        shot = sct.grab(region)
+
+    image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+    if image.width > max_width:
+        height = round(image.height * max_width / image.width)
+        image = image.resize(
+            (max_width, height), Image.LANCZOS  # type: ignore[attr-defined]
+        )
+
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=quality)
+    return buffer.getvalue()
+
+
 class ScreenCapture:
     """Captures the desktop as JPEG frames at a fixed frame rate.
 

@@ -70,7 +70,20 @@ _PATH_FIELDS: dict[str, list[str]] = {
 }
 
 _WRITE_TOOLS = {"write_file", "delete_file"}
-_DESTRUCTIVE_TOOLS = {"write_file", "delete_file", "run_command"}
+_DESTRUCTIVE_TOOLS = {
+    "write_file",
+    "delete_file",
+    "run_command",
+    # Computer-use actions that change the desktop state. ``computer_mouse_move``
+    # and ``computer_screenshot`` are read-only and stay auto-allowed.
+    "computer_left_click",
+    "computer_right_click",
+    "computer_double_click",
+    "computer_type",
+    "computer_key",
+    "computer_drag",
+    "computer_scroll",
+}
 
 # Name patterns that are always off-limits, regardless of location.
 _NAME_DENY_GLOBS = (".env*", "*.pem", "*.key", "id_rsa*", "credentials*")

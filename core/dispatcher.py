@@ -11,6 +11,9 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from pydantic import BaseModel
+
+import tools.computer as computer_tools
 import tools.fs as fs_tools
 import tools.shell as shell_tools
 from audit.journal import Journal
@@ -26,6 +29,13 @@ from persist.store import Store
 from policy import PolicyEngine, redact
 from policy.engine import DecisionKind
 from tools.registry import (
+    ComputerClickArgs,
+    ComputerDragArgs,
+    ComputerKeyArgs,
+    ComputerMouseMoveArgs,
+    ComputerScreenshotArgs,
+    ComputerScrollArgs,
+    ComputerTypeArgs,
     DeleteFileArgs,
     ListDirectoryArgs,
     ReadFileArgs,
@@ -41,7 +51,7 @@ _TOOL_TABLE: dict[
     str,
     tuple[
         Callable[..., ToolResult] | Callable[..., Awaitable[ToolResult]],
-        type[ReadFileArgs | WriteFileArgs | ListDirectoryArgs | DeleteFileArgs | RunCommandArgs],
+        type[BaseModel],
     ],
 ] = {
     "read_file": (fs_tools.read_file, ReadFileArgs),
@@ -49,6 +59,15 @@ _TOOL_TABLE: dict[
     "list_directory": (fs_tools.list_directory, ListDirectoryArgs),
     "delete_file": (fs_tools.delete_file, DeleteFileArgs),
     "run_command": (shell_tools.run_command, RunCommandArgs),
+    "computer_mouse_move": (computer_tools.mouse_move, ComputerMouseMoveArgs),
+    "computer_left_click": (computer_tools.left_click, ComputerClickArgs),
+    "computer_right_click": (computer_tools.right_click, ComputerClickArgs),
+    "computer_double_click": (computer_tools.double_click, ComputerClickArgs),
+    "computer_type": (computer_tools.type_text, ComputerTypeArgs),
+    "computer_key": (computer_tools.key_press, ComputerKeyArgs),
+    "computer_drag": (computer_tools.drag, ComputerDragArgs),
+    "computer_scroll": (computer_tools.scroll, ComputerScrollArgs),
+    "computer_screenshot": (computer_tools.take_screenshot, ComputerScreenshotArgs),
 }
 
 RespondCallback = Callable[[str, str, ToolResult], Awaitable[bool]]

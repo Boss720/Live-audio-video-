@@ -27,6 +27,7 @@ and search the web.
 - Workspace Root: {workspace_root}
 - Shell: {shell}
 {screen_note}
+{computer_note}
 
 ## Your Tools
 1. **read_file(path, start_line?, end_line?)** — Read file contents, optionally a specific \
@@ -59,6 +60,37 @@ _SCREEN_NOTE = """\
 When the user says "this", "that", "here," or asks what they are looking at, \
 check the screen feed before asking them to describe it. The feed updates at a \
 low frame rate, so it may lag a moment behind their actions."""
+
+_COMPUTER_USE_NOTE = """\
+## Computer Control (mouse & keyboard)
+
+You can directly control the user's mouse and keyboard on the screen you see.
+
+Coordinates are normalized to a 0-1000 grid on both axes relative to the screen \
+feed: (0, 0) is the top-left corner and (1000, 1000) is the bottom-right. Read \
+element positions from the latest screen frame before acting.
+
+Additional tools:
+- **computer_mouse_move(x, y)** — Move the cursor.
+- **computer_left_click(x, y)** / **computer_right_click(x, y)** / \
+**computer_double_click(x, y)** — Click at a position.
+- **computer_type(text)** — Type text into the currently focused field. Click \
+the field first to focus it.
+- **computer_key(keys)** — Press a key or combination, e.g. "enter", "ctrl+s", \
+"alt+tab", "ctrl+shift+escape".
+- **computer_drag(x1, y1, x2, y2)** — Drag from one point to another.
+- **computer_scroll(direction, amount?, x?, y?)** — Scroll up/down/left/right.
+- **computer_screenshot()** — Request a fresh screenshot on demand.
+
+Guidelines:
+- Look at the screen before every action. After each action a fresh screenshot \
+is sent to you automatically — verify the result before continuing to the \
+next step.
+- Prefer keyboard shortcuts over clicking when they are reliable.
+- Break tasks into small steps and confirm each one visually instead of \
+blindly chaining many actions.
+- Actions that change the computer (clicks, typing, key presses, drags, \
+scrolls) may require explicit user approval before they execute."""
 
 _WAKE_WORD_TEMPLATE = """
 ## Wake-Word Gating (STRICT)
@@ -120,6 +152,9 @@ class AppSettings(BaseSettings):
     headless: bool = True
     debug: bool = False
     minimize_to_tray: bool = True
+    # Mouse/keyboard control tools. Implies screen sharing: the model cannot
+    # aim clicks at a screen it cannot see.
+    computer_use_enabled: bool = False
     # Extra instructions appended to the built-in system prompt. Empty = default.
     system_prompt: str = ""
     # Wake-word gating: voice input is ignored unless it contains the wake word.
@@ -243,7 +278,8 @@ class AppSettings(BaseSettings):
             working_dir=self.working_dir,
             workspace_root=self.workspace_root,
             shell=shell,
-            screen_note=_SCREEN_NOTE if self.share_screen else "",
+            screen_note=_SCREEN_NOTE if (self.share_screen or self.computer_use_enabled) else "",
+            computer_note=_COMPUTER_USE_NOTE if self.computer_use_enabled else "",
         )
         if self.system_prompt.strip():
             instruction_text += (

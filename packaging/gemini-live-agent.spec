@@ -68,6 +68,18 @@ a = Analysis(
         "mss.windows",
         "keyring.backends.Windows",
         "_sounddevice_data",
+        # pyautogui and its dependency tree are imported lazily inside
+        # tools/computer.py, so PyInstaller's static analysis misses them.
+        "pyautogui",
+        "pyautogui._pyautogui_win",
+        "pyperclip",
+        "pymsgbox",
+        "pyscreeze",
+        "pytweening",
+        "pygetwindow",
+        "pygetwindow._pygetwindow_win",
+        "pyrect",
+        "mouseinfo",
     ],
     hookspath=[],
     hooksconfig={},

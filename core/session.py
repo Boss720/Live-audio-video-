@@ -50,7 +50,7 @@ from core.turn_state import TurnState
 from core.wake_word import contains_wake_word
 from media import devices
 from media.microphone import INPUT_SAMPLE_RATE, Microphone
-from media.screen import ScreenCapture
+from media.screen import ScreenCapture, capture_jpeg
 from media.speaker import Speaker
 from obs.logging_setup import get_logger
 from persist.store import Store
@@ -58,8 +58,9 @@ from policy import PolicyEngine
 from settings.secrets import get_api_key
 from settings.settings import AppSettings
 from tools import build_function_declarations
+from tools import computer as computer_tools
 from tools._state import set_policy_engine, set_workspace_root
-from tools.registry import ToolResult
+from tools.registry import COMPUTER_TOOL_NAMES, ToolResult
 
 logger = get_logger(__name__)
 
@@ -187,6 +188,7 @@ class LiveSession:
         )
         set_policy_engine(policy)
         set_workspace_root(self._settings.workspace_root)
+        computer_tools.set_monitor(self._settings.screen_monitor)
 
         api_key = get_api_key()
         if api_key is None:
@@ -194,7 +196,11 @@ class LiveSession:
 
         client = genai.Client(api_key=api_key)
         connect_config = self._settings.as_connect_config(
-            tools=list(build_function_declarations()),
+            tools=list(
+                build_function_declarations(
+                    computer_use=self._settings.computer_use_enabled
+                )
+            ),
             resumption_handle=self._resumption_handle,
         )
 
@@ -263,7 +269,10 @@ class LiveSession:
                 self._mic = Microphone(device=self._settings.input_device)
                 await self._mic.start()
 
-            if self._settings.share_screen and self._screen is None:
+            if (
+                (self._settings.share_screen or self._settings.computer_use_enabled)
+                and self._screen is None
+            ):
                 self._screen = ScreenCapture(
                     fps=self._settings.screen_fps,
                     monitor=self._settings.screen_monitor,
@@ -578,6 +587,12 @@ class LiveSession:
                         self._mic.set_gate(cmd.open)
 
                 elif isinstance(cmd, SetShareScreen):
+                    if not cmd.enabled and self._settings.computer_use_enabled:
+                        logger.warning(
+                            "[SCREEN] Ignoring SetShareScreen(False) because "
+                            "computer_use is enabled; the model must see the screen."
+                        )
+                        continue
                     if cmd.enabled:
                         if self._screen is None:
                             self._screen = ScreenCapture(
@@ -731,9 +746,31 @@ class LiveSession:
                     )
                 ]
             )
+            if name in COMPUTER_TOOL_NAMES:
+                await self._push_fresh_frame(session)
             return True
 
         return respond
+
+    async def _push_fresh_frame(self, session: Any) -> None:
+        """Send a one-shot screenshot after a computer-use action.
+
+        Live tool responses cannot carry images, so the updated screen state
+        rides the realtime video channel instead. The short delay lets the
+        desktop react to the action before the frame is grabbed. Failures
+        here must not break the tool response that was already delivered.
+        """
+        try:
+            await asyncio.sleep(0.4)
+            frame = await asyncio.to_thread(
+                capture_jpeg,
+                self._settings.screen_monitor,
+            )
+            await session.send_realtime_input(
+                video=types.Blob(data=frame, mime_type="image/jpeg")
+            )
+        except Exception as exc:
+            logger.warning("Failed to push post-action screenshot: %s", exc)
 
     def _classify_disconnect(self, exc: BaseException) -> DisconnectReason:
         """Map an exception to a structured disconnect reason."""

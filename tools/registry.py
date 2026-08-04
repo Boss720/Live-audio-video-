@@ -74,6 +74,64 @@ class RunCommandArgs(BaseModel):
     )
 
 
+_COORD_X = "X coordinate, normalized 0-1000 on the shared screen (0 = left edge)."
+_COORD_Y = "Y coordinate, normalized 0-1000 on the shared screen (0 = top edge)."
+
+
+class ComputerMouseMoveArgs(BaseModel):
+    """Arguments for ``computer_mouse_move``."""
+
+    x: int = Field(..., ge=0, le=1000, description=_COORD_X)
+    y: int = Field(..., ge=0, le=1000, description=_COORD_Y)
+
+
+class ComputerClickArgs(BaseModel):
+    """Arguments for the computer click tools."""
+
+    x: int = Field(..., ge=0, le=1000, description=_COORD_X)
+    y: int = Field(..., ge=0, le=1000, description=_COORD_Y)
+
+
+class ComputerTypeArgs(BaseModel):
+    """Arguments for ``computer_type``."""
+
+    text: str = Field(..., description="Text to type into the focused field.")
+
+
+class ComputerKeyArgs(BaseModel):
+    """Arguments for ``computer_key``."""
+
+    keys: str = Field(
+        ...,
+        description=(
+            "Key or combination to press, joined with '+'. Examples: 'enter', "
+            "'tab', 'ctrl+s', 'alt+tab', 'ctrl+shift+escape'."
+        ),
+    )
+
+
+class ComputerDragArgs(BaseModel):
+    """Arguments for ``computer_drag``."""
+
+    x1: int = Field(..., ge=0, le=1000, description="Start " + _COORD_X)
+    y1: int = Field(..., ge=0, le=1000, description="Start " + _COORD_Y)
+    x2: int = Field(..., ge=0, le=1000, description="End " + _COORD_X)
+    y2: int = Field(..., ge=0, le=1000, description="End " + _COORD_Y)
+
+
+class ComputerScrollArgs(BaseModel):
+    """Arguments for ``computer_scroll``."""
+
+    direction: str = Field(..., description="Scroll direction: up, down, left, or right.")
+    amount: int = Field(3, ge=1, le=100, description="Wheel clicks to scroll (1-100).")
+    x: int | None = Field(None, ge=0, le=1000, description=_COORD_X + " Optional.")
+    y: int | None = Field(None, ge=0, le=1000, description=_COORD_Y + " Optional.")
+
+
+class ComputerScreenshotArgs(BaseModel):
+    """Arguments for ``computer_screenshot`` (none)."""
+
+
 def _is_optional(annotation: type) -> bool:
     origin = get_origin(annotation)
     if origin is not None:
@@ -168,13 +226,93 @@ ALL_TOOLS: list[ToolSpec] = [
     ),
 ]
 
+# Mouse/keyboard control tools. Only declared when ``computer_use_enabled``
+# is set; coordinates are normalized 0-1000 on the shared monitor.
+COMPUTER_TOOLS: list[ToolSpec] = [
+    ToolSpec(
+        name="computer_mouse_move",
+        description=(
+            "Move the mouse cursor to (x, y). Coordinates are normalized 0-1000 "
+            "on the shared screen; (0, 0) is the top-left corner."
+        ),
+        args_schema=ComputerMouseMoveArgs,
+        destructive=False,
+    ),
+    ToolSpec(
+        name="computer_left_click",
+        description="Left-click at (x, y), normalized 0-1000 on the shared screen.",
+        args_schema=ComputerClickArgs,
+        destructive=True,
+    ),
+    ToolSpec(
+        name="computer_right_click",
+        description="Right-click at (x, y), normalized 0-1000 on the shared screen.",
+        args_schema=ComputerClickArgs,
+        destructive=True,
+    ),
+    ToolSpec(
+        name="computer_double_click",
+        description="Double-click at (x, y), normalized 0-1000 on the shared screen.",
+        args_schema=ComputerClickArgs,
+        destructive=True,
+    ),
+    ToolSpec(
+        name="computer_type",
+        description=(
+            "Type text into the currently focused input field. Click the target "
+            "field first to focus it."
+        ),
+        args_schema=ComputerTypeArgs,
+        destructive=True,
+    ),
+    ToolSpec(
+        name="computer_key",
+        description=(
+            "Press a key or key combination such as 'enter', 'tab', 'ctrl+s', "
+            "'alt+tab', or 'ctrl+shift+escape'."
+        ),
+        args_schema=ComputerKeyArgs,
+        destructive=True,
+    ),
+    ToolSpec(
+        name="computer_drag",
+        description=(
+            "Drag with the left mouse button from (x1, y1) to (x2, y2), all "
+            "normalized 0-1000 on the shared screen."
+        ),
+        args_schema=ComputerDragArgs,
+        destructive=True,
+    ),
+    ToolSpec(
+        name="computer_scroll",
+        description=(
+            "Scroll the mouse wheel at (x, y) or the current cursor position. "
+            "direction is up/down/left/right; amount is wheel clicks."
+        ),
+        args_schema=ComputerScrollArgs,
+        destructive=True,
+    ),
+    ToolSpec(
+        name="computer_screenshot",
+        description=(
+            "Capture a fresh screenshot of the shared screen. The frame is sent "
+            "to you as video input right after this call."
+        ),
+        args_schema=ComputerScreenshotArgs,
+        destructive=False,
+    ),
+]
 
-def build_function_declarations() -> Sequence[types.Tool]:
+COMPUTER_TOOL_NAMES: frozenset[str] = frozenset(spec.name for spec in COMPUTER_TOOLS)
+
+
+def build_function_declarations(*, computer_use: bool = False) -> Sequence[types.Tool]:
     """Build explicit Gemini tools from function declarations.
 
     The Live SDK expects ``list[types.Tool]``; each tool wraps one function
-    declaration.
+    declaration. ``computer_use`` adds the mouse/keyboard control tools.
     """
+    specs = ALL_TOOLS + COMPUTER_TOOLS if computer_use else ALL_TOOLS
     return [
         types.Tool(
             function_declarations=[
@@ -185,5 +323,5 @@ def build_function_declarations() -> Sequence[types.Tool]:
                 )
             ]
         )
-        for spec in ALL_TOOLS
+        for spec in specs
     ]

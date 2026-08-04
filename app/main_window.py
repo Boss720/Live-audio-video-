@@ -237,6 +237,14 @@ class MainWindow(QMainWindow):
         settings_layout.addLayout(fps_layout, row, 0, 1, 2)
 
         row += 1
+        self._computer_use_check = QCheckBox("Computer control (mouse/keyboard)")
+        self._computer_use_check.setToolTip(
+            "Let the agent move the mouse, click, type, press keys and scroll. "
+            "Implies screen sharing; actions require approval unless yolo is on."
+        )
+        settings_layout.addWidget(self._computer_use_check, row, 0, 1, 2)
+
+        row += 1
         self._input_device_combo = QComboBox()
         self._input_device_combo.addItem("(default)", None)
         settings_layout.addWidget(QLabel("Input device:"), row, 0)
@@ -409,6 +417,7 @@ class MainWindow(QMainWindow):
         self._mode_combo.setCurrentText(self._settings.mode.title())
         self._share_screen_check.setChecked(self._settings.share_screen)
         self._fps_spin.setValue(self._settings.screen_fps)
+        self._computer_use_check.setChecked(self._settings.computer_use_enabled)
         self._yolo_check.setChecked(self._settings.yolo)
         self._tray_check.setChecked(self._settings.minimize_to_tray)
         self._system_prompt_edit.setPlainText(self._settings.system_prompt)
@@ -433,6 +442,7 @@ class MainWindow(QMainWindow):
             workspace_root=working_dir,
             share_screen=self._share_screen_check.isChecked(),
             screen_fps=self._fps_spin.value(),
+            computer_use_enabled=self._computer_use_check.isChecked(),
             input_device=self._input_device_combo.currentData(),
             output_device=self._output_device_combo.currentData(),
             yolo=self._yolo_check.isChecked(),
@@ -570,7 +580,7 @@ class MainWindow(QMainWindow):
         self._connect_btn.setText("Disconnect")
         self._settings_widget.setEnabled(False)
 
-        self._sharing_active = settings.share_screen
+        self._sharing_active = settings.share_screen or settings.computer_use_enabled
         self._update_share_banner()
         self._add_activity(f"Connecting (model {settings.model})...")
 
@@ -580,7 +590,8 @@ class MainWindow(QMainWindow):
         self._bridge.send_command(SetMicGate(open=not self._mic_muted))
         self._bridge.send_command(
             SetShareScreen(
-                enabled=settings.share_screen,
+                # Computer control needs the screen feed; never disable it here.
+                enabled=settings.share_screen or settings.computer_use_enabled,
                 monitor=settings.screen_monitor,
             )
         )

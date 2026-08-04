@@ -9,6 +9,47 @@
 - **Phases complete:** 1 (foundation), 2 (headless core extraction), 3 (session lifetime / resumption / barge-in), 4 (GUI shell on a QThread), 5 (GUI control surfaces + voice UX polish), 6 (persistence wiring + packaging), /goal production fixes (2026-08-01)
 - **Next:** manual Phase 6 gate with real hardware (see below), then cut-list candidates
 
+## Computer use (mouse/keyboard control, 2026-08-02)
+
+The agent can now drive the desktop directly instead of scripting everything
+through PowerShell: move/click/double/right-click, type, key combos, drag,
+scroll, and on-demand screenshots.
+
+- **Not the native `computer_use` tool.** Probing (`scripts/probe_computer_use_live.py`)
+  showed the Live API *accepts* `types.Tool(computer_use=...)` at setup but the
+  backend dies with `1011 internal error` the moment the model invokes it
+  (`gemini-3.1-flash-live-preview`; TEXT-modality models don't run on Live at
+  all). So the actions are declared as nine ordinary function tools
+  (`computer_mouse_move`, `computer_left_click`, `computer_right_click`,
+  `computer_double_click`, `computer_type`, `computer_key`, `computer_drag`,
+  `computer_scroll`, `computer_screenshot`) — same protocol shape, through the
+  existing registry/dispatcher/policy path.
+- **Executor:** `tools/computer.py` (pyautogui, new dependency). Tool
+  coordinates are normalized 0–1000 on both axes of the shared monitor
+  (`media.screen.monitor_geometry` maps them to physical pixels). pyautogui
+  FAILSAFE is on: mouse slammed into a screen corner aborts the action.
+  Non-ASCII text is pasted via clipboard (pyperclip), ASCII is typed.
+- **Feedback loop:** Live tool responses can't carry images, so after every
+  `computer_*` call the session grabs a one-shot JPEG (`media.screen.capture_jpeg`)
+  and pushes it via `send_realtime_input(video=...)` — the model sees the
+  result of each action immediately (`core/session.py::_push_fresh_frame`).
+- **Gating:** all state-changing actions are in `_DESTRUCTIVE_TOOLS` → approval
+  card in GUARDED mode; `computer_mouse_move` / `computer_screenshot` are
+  auto-allowed. YOLO mode skips approvals as usual, so `yolo + computer_use`
+  gives the agent full control without per-action confirmations.
+- **Screen-share protection:** `SetShareScreen(enabled=False)` is ignored while
+  `computer_use_enabled` is active, so the model cannot be blinded mid-task.
+- **Flag:** `computer_use_enabled` (settings.json / `GEMINI_COMPUTER_USE_ENABLED`
+  / GUI "Computer control" checkbox). Implies screen sharing — the GUI never
+  sends `SetShareScreen(enabled=False)` when it's on, and the system prompt
+  gains a "Computer Control" section explaining the 0–1000 grid.
+- **Tests:** `tests/test_computer_tools.py` (30 tests: coordinate mapping,
+  executor fakes, policy gating, registry declarations, dispatcher round-trip).
+  Full suite 132 passed, ruff/mypy clean. Live-verified: model emits
+  `computer_screenshot` correctly when asked; mss/pyautogui coordinate spaces
+  match on the dev machine (1920×1080, no DPI offset). **Goal audit:** 133
+  passed, ruff/mypy clean; YOLO full-control verified with expanded tests.
+
 ## /goal production fixes (2026-08-01, commit `c7d622d`)
 
 Two production blockers reported against the installed build, traced to three defects:
