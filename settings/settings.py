@@ -13,7 +13,38 @@ from platformdirs import user_config_dir
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_AVAILABLE_VOICES = ("Puck", "Charon", "Aoede", "Fenrir", "Kore")
+_AVAILABLE_VOICES = (
+    "Puck",
+    "Charon",
+    "Aoede",
+    "Fenrir",
+    "Kore",
+    "Zephyr",
+    "Leda",
+    "Orus",
+    "Callirrhoe",
+    "Autonoe",
+    "Enceladus",
+    "Iapetus",
+    "Umbriel",
+    "Algieba",
+    "Despina",
+    "Erinome",
+    "Algenib",
+    "Rasalgethi",
+    "Laomedeia",
+    "Achernar",
+    "Alnilam",
+    "Schedar",
+    "Gacrux",
+    "Pulcherrima",
+    "Achird",
+    "Zubenelgenubi",
+    "Vindemiatrix",
+    "Sadachbia",
+    "Sadaltager",
+    "Sulafat",
+)
 _MODES = ("text", "voice", "both")
 
 _SYSTEM_INSTRUCTION_TEMPLATE = """\
@@ -30,15 +61,7 @@ and search the web.
 {computer_note}
 
 ## Your Tools
-1. **read_file(path, start_line?, end_line?)** — Read file contents, optionally a specific \
-line range (1-indexed, inclusive).
-2. **write_file(path, content)** — Write or overwrite a file. Creates parent directories \
-automatically.
-3. **list_directory(path)** — List directory contents with file types and sizes.
-4. **delete_file(path)** — Delete a file or empty directory.
-5. **run_command(command, working_dir?, timeout?)** — Execute a shell command and return stdout \
-+ stderr.
-6. **web_search(query)** — Search the web and return summarized results.
+{tools}
 
 ## Guidelines
 - When editing files, first read the file to understand its current contents, then write the \
@@ -123,6 +146,21 @@ after it means ignore, or at most a minimal acknowledgment.
 - Typed/text input is always in scope — no wake word needed there, since the \
 user deliberately typed to you.
 """
+
+
+def _generate_tools_list(*, computer_use: bool = False) -> str:
+    """Generate the "Your Tools" section from the registry.
+
+    Returns a numbered markdown list of tools available to the model.
+    Avoids import cycles by importing inside this function.
+    """
+    from tools.registry import ALL_TOOLS, COMPUTER_TOOLS
+
+    specs = ALL_TOOLS + COMPUTER_TOOLS if computer_use else ALL_TOOLS
+    lines = []
+    for idx, spec in enumerate(specs, 1):
+        lines.append(f"{idx}. **{spec.name}** — {spec.description}")
+    return "\n".join(lines)
 
 
 class AppSettings(BaseSettings):
@@ -280,6 +318,7 @@ class AppSettings(BaseSettings):
             shell=shell,
             screen_note=_SCREEN_NOTE if (self.share_screen or self.computer_use_enabled) else "",
             computer_note=_COMPUTER_USE_NOTE if self.computer_use_enabled else "",
+            tools=_generate_tools_list(computer_use=self.computer_use_enabled),
         )
         if self.system_prompt.strip():
             instruction_text += (
