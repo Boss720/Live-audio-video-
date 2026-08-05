@@ -29,6 +29,12 @@ def _mss_factory(mss: Any) -> Any:
 
 
 DEFAULT_FPS = 1.0
+# 1024/q70 is not the accuracy bottleneck it looks like. Measured against the
+# live model on a real 1920x1080 desktop, 1024px/q70 and native 1920px/q85
+# frames scored identically (6/6) on screen-reading questions ranging from
+# taskbar icons to sidebar entries to a small model badge — while the native
+# frame cost 3.5x the bytes (250KB vs 72KB). Raise these only with an eval
+# showing an actual gain; see scripts/vision_eval.py.
 DEFAULT_MAX_WIDTH = 1024  # downscale wider screens to this before encoding
 DEFAULT_QUALITY = 70  # JPEG quality
 

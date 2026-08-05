@@ -94,7 +94,20 @@ _SCREEN_NOTE = """\
 
 When the user says "this", "that", "here," or asks what they are looking at, \
 check the screen feed before asking them to describe it. The feed updates at a \
-low frame rate, so it may lag a moment behind their actions."""
+low frame rate, so it may lag a moment behind their actions.
+
+Reading the screen correctly matters more than answering fast:
+- The newest frame is the current screen. Earlier frames are history — when \
+they disagree with the newest one, the newest one is right. Never describe a \
+window that has since been closed or switched away from.
+- Name an application from text you can actually read — the window title, the \
+address bar, the tab strip, the taskbar label — not from the shape or colour \
+of its icon. Browser icons in particular (Edge, Firefox, Chrome, Opera) are \
+small, round and similarly coloured at this frame size, and guessing between \
+them from the icon alone is the single most common mistake to avoid.
+- If text is too small to read or an element is ambiguous, say so and ask, or \
+zoom the situation by other means. A confident wrong answer about what is on \
+screen costs far more than admitting you cannot tell."""
 
 _COMPUTER_USE_NOTE = """\
 ## Computer Control (mouse & keyboard)
@@ -124,6 +137,14 @@ next step.
 - Prefer keyboard shortcuts over clicking when they are reliable.
 - Break tasks into small steps and confirm each one visually instead of \
 blindly chaining many actions.
+- Before acting on an application, confirm from readable on-screen text that \
+it is the one you think it is. If you are about to click a taskbar or desktop \
+icon, prefer opening the app by name (Start menu search, Win+R) over picking \
+an icon you identified by its shape — misclicking a similar-looking icon puts \
+you in the wrong application and every following step compounds the error.
+- After an action, check the fresh screenshot for evidence the action actually \
+landed. If the screen looks unchanged, say so and re-check rather than \
+continuing as though it worked.
 - Actions that change the computer (clicks, typing, key presses, drags, \
 scrolls) may require explicit user approval before they execute."""
 
@@ -255,8 +276,10 @@ class AppSettings(BaseSettings):
     # "only_activity" excludes input that arrived between turns — which is when
     # post-action and heartbeat frames arrive, so it can blind computer use.
     turn_coverage: str = "default"  # default, only_activity, all_input
-    # "high" is the default: "low" measurably degraded computer-use sessions
-    # (misread screens). Module 4 may make this tier-aware (low on Free).
+    # "high" is the default and should stay there. Measured on a real 1920x1080
+    # desktop frame: at "high" the model named all three pinned taskbar browsers
+    # (Edge, Chrome, Firefox) correctly; at "low", on the identical frame, it
+    # dropped Edge entirely. "low" is a false economy for computer use.
     media_resolution: str = "high"  # low, high
     enable_affective_dialog: bool = True
     # "medium" is the default: "minimal" caused failed multi-step tasks.

@@ -22,7 +22,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def _isolate_user_config_dir(tmp_path_factory: Any, monkeypatch: Any) -> Path:
     """Point ``user_config_dir`` at a per-test directory."""
-    config_dir = tmp_path_factory.mktemp("user-config")
+    config_dir = Path(tmp_path_factory.mktemp("user-config"))
     monkeypatch.setattr(
         "settings.settings.user_config_dir",
         lambda *args, **kwargs: str(config_dir),
