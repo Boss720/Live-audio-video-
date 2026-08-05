@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import re
+import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -68,6 +70,9 @@ logger = get_logger(__name__)
 
 _MAX_VIDEO_SEND_ERRORS = 5
 _METER_INTERVAL_SECONDS = 0.033
+# Time given to the desktop to repaint after a computer-use action before the
+# post-action frame is grabbed.
+_POST_ACTION_SETTLE_SECONDS = 0.15
 
 # Per-1M-token pricing (input USD, output USD) for the Live models, keyed by
 # model-name prefix. The session does not know which pricing tier it is
@@ -79,6 +84,21 @@ _COST_PER_MILLION_TOKENS: dict[str, tuple[float, float]] = {
     "gemini-2.5-flash-native-audio": (0.15, 0.60),
 }
 _DEFAULT_COST_PER_MILLION_TOKENS = (0.15, 0.60)
+
+
+def _modality_name(modality: Any) -> str:
+    """Return the bare modality name, e.g. ``"VIDEO"``.
+
+    ``usage_metadata`` reports modalities as ``MediaModality`` enum members
+    whose ``str()`` is ``"MediaModality.VIDEO"`` — comparing that against
+    ``"VIDEO"`` never matches, which silently zeroed every per-modality token
+    count. Read ``name``/``value`` first and fall back to the trailing segment
+    so a plain string still works.
+    """
+    name = getattr(modality, "name", None) or getattr(modality, "value", None)
+    if name is None:
+        name = str(modality).rsplit(".", 1)[-1]
+    return str(name).upper()
 
 
 def _cost_rates_for_model(model: str) -> tuple[float, float]:
@@ -311,6 +331,14 @@ class LiveSession:
         self._completion_tokens_used = 0
 
         self._video_send_task: asyncio.Task[Any] | None = None
+        # On-demand frame state: when the last frame went out, and a digest of
+        # it so an unchanged screen is not billed again.
+        self._last_frame_sent = 0.0
+        self._last_frame_digest: bytes | None = None
+        # One frame per user utterance, so "what am I looking at?" does not wait
+        # for the next heartbeat. Strong refs: asyncio only holds weak ones.
+        self._frame_tasks: set[asyncio.Task[Any]] = set()
+        self._frame_sent_this_utterance = False
         self._shutdown_event = asyncio.Event()
         self._mic_gate_open = True
 
@@ -417,8 +445,14 @@ class LiveSession:
                 self._mic = Microphone(device=self._settings.input_device)
                 await self._mic.start()
 
+            wants_screen = (
+                self._settings.share_screen or self._settings.computer_use_enabled
+            )
+            # On-demand mode grabs its own frames through ``capture_jpeg``, so
+            # the continuous capture thread is only started for "stream" mode.
             if (
-                (self._settings.share_screen or self._settings.computer_use_enabled)
+                wants_screen
+                and self._settings.frame_mode == "stream"
                 and self._screen is None
             ):
                 self._screen = ScreenCapture(
@@ -448,7 +482,9 @@ class LiveSession:
                         name="audio_send",
                     )
                 )
-            if self._screen is not None:
+            if self._screen is not None or (
+                wants_screen and self._settings.frame_mode == "on_demand"
+            ):
                 self._video_send_task = asyncio.create_task(
                     self._video_send_loop(session, self._screen),
                     name="video_send",
@@ -589,6 +625,24 @@ class LiveSession:
                                     update={"turn_complete": True}
                                 )
 
+                        # The user started talking: get one current frame in
+                        # front of the model now rather than at the next
+                        # heartbeat, so "what is this?" resolves against what
+                        # is actually on screen. Unchanged screens still cost
+                        # nothing (``_send_frame`` drops duplicates).
+                        if (
+                            self._settings.frame_mode == "on_demand"
+                            and not self._frame_sent_this_utterance
+                            and (
+                                self._settings.share_screen
+                                or self._settings.computer_use_enabled
+                            )
+                            and server_content.input_transcription
+                            and server_content.input_transcription.text
+                        ):
+                            self._frame_sent_this_utterance = True
+                            self._spawn_frame(session, reason="user_turn")
+
                         # Wake-word gate: a voice turn that never addressed us
                         # must produce no audio, no transcript, no tool calls.
                         if self._update_wake_gate(server_content):
@@ -650,6 +704,7 @@ class LiveSession:
 
                         if server_content.turn_complete or server_content.interrupted:
                             self._reset_wake_gate()
+                            self._frame_sent_this_utterance = False
 
                     # Tool calls are handled off the receive path so approvals and
                     # blocking operations cannot stall message handling. A gated
@@ -692,7 +747,7 @@ class LiveSession:
                             return sum(
                                 getattr(d, "token_count", 0) or 0
                                 for d in (details or [])
-                                if str(getattr(d, "modality", "")).upper() == name
+                                if _modality_name(getattr(d, "modality", "")) == name
                             )
 
                         prompt_details = getattr(usage, "prompt_tokens_details", None)
@@ -797,7 +852,21 @@ class LiveSession:
                         )
                         continue
                     if cmd.enabled:
-                        if self._screen is None:
+                        if (
+                            self._settings.frame_mode == "on_demand"
+                            and self._screen is None
+                        ):
+                            # No capture thread in on-demand mode; the frame
+                            # task grabs its own frames.
+                            if (
+                                self._video_send_task is None
+                                or self._video_send_task.done()
+                            ):
+                                self._video_send_task = asyncio.create_task(
+                                    self._video_send_loop(session, None),
+                                    name="video_send_dynamic",
+                                )
+                        elif self._screen is None:
                             self._screen = ScreenCapture(
                                 fps=self._settings.screen_fps,
                                 monitor=cmd.monitor
@@ -881,8 +950,44 @@ class LiveSession:
             logger.exception("Audio send loop failed")
             await self._emit(SessionError(message=str(exc), fatal=False))
 
-    async def _video_send_loop(self, session: Any, screen: ScreenCapture) -> None:
-        """Stream screen JPEG frames to the model."""
+    async def _heartbeat_frame_loop(self, session: Any) -> None:
+        """Send an ambient frame every ``frame_heartbeat_seconds``.
+
+        On-demand counterpart of ``_video_send_loop``: the model still sees the
+        screen change without a frame going out every second. Unchanged screens
+        are dropped by ``_send_frame``, so an idle desktop sends nothing.
+        """
+        try:
+            while not self._shutdown_event.is_set():
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(
+                        self._shutdown_event.wait(),
+                        timeout=self._settings.frame_heartbeat_seconds,
+                    )
+                if self._shutdown_event.is_set():
+                    return
+                try:
+                    await self._send_frame(session, reason="heartbeat")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning("Heartbeat frame failed: %s", exc)
+        except asyncio.CancelledError:
+            pass
+
+    async def _video_send_loop(
+        self, session: Any, screen: ScreenCapture | None
+    ) -> None:
+        """Stream screen JPEG frames to the model.
+
+        In ``on_demand`` frame mode there is no capture thread and ``screen``
+        is ``None``: frames come from the heartbeat and from computer-use
+        actions instead.
+        """
+        if self._settings.frame_mode == "on_demand" or screen is None:
+            await self._heartbeat_frame_loop(session)
+            return
+
         consecutive_errors = 0
         try:
             while not self._shutdown_event.is_set():
@@ -958,6 +1063,53 @@ class LiveSession:
 
         return respond
 
+    async def _send_frame(self, session: Any, *, reason: str, force: bool = False) -> bool:
+        """Send at most one screen frame, shared by every frame trigger.
+
+        Two gates keep the context small: a floor on the interval between any
+        two frames, and a digest check that drops a frame identical to the last
+        one sent — an idle screen costs nothing. ``force`` bypasses both, and
+        is used for the post-action frame: that frame is the model's only way
+        to see what its action did, including an action that changed nothing,
+        and it must not be lost because a heartbeat happened to fire just
+        before it.
+        """
+        now = time.monotonic()
+        if (
+            not force
+            and now - self._last_frame_sent < self._settings.frame_min_interval_seconds
+        ):
+            return False
+
+        frame = await asyncio.to_thread(capture_jpeg, self._settings.screen_monitor)
+        digest = hashlib.blake2b(frame, digest_size=16).digest()
+        if not force and digest == self._last_frame_digest:
+            logger.debug("[SCREEN] frame unchanged, not sent (%s)", reason)
+            return False
+
+        await session.send_realtime_input(
+            video=types.Blob(data=frame, mime_type="image/jpeg")
+        )
+        self._last_frame_sent = now
+        self._last_frame_digest = digest
+        logger.debug("[SCREEN] frame sent (%s, %d bytes)", reason, len(frame))
+        return True
+
+    def _spawn_frame(self, session: Any, *, reason: str) -> None:
+        """Fire a frame send off the receive loop, ignoring failures."""
+
+        async def send() -> None:
+            try:
+                await self._send_frame(session, reason=reason)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Frame send failed (%s): %s", reason, exc)
+
+        task = asyncio.ensure_future(send())
+        self._frame_tasks.add(task)
+        task.add_done_callback(self._frame_tasks.discard)
+
     async def _push_fresh_frame(self, session: Any) -> None:
         """Send a one-shot screenshot after a computer-use action.
 
@@ -967,14 +1119,8 @@ class LiveSession:
         here must not break the tool response that was already delivered.
         """
         try:
-            await asyncio.sleep(0.4)
-            frame = await asyncio.to_thread(
-                capture_jpeg,
-                self._settings.screen_monitor,
-            )
-            await session.send_realtime_input(
-                video=types.Blob(data=frame, mime_type="image/jpeg")
-            )
+            await asyncio.sleep(_POST_ACTION_SETTLE_SECONDS)
+            await self._send_frame(session, reason="post_action", force=True)
         except Exception as exc:
             logger.warning("Failed to push post-action screenshot: %s", exc)
 
@@ -1124,6 +1270,13 @@ class LiveSession:
 
     async def _stop_media(self) -> None:
         """Stop microphone, speaker, and screen capture if the session owns them."""
+        if self._frame_tasks:
+            tasks = list(self._frame_tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self._frame_tasks.clear()
+
         if self._screen is not None and self._owns_screen:
             try:
                 await self._screen.stop()

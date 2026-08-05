@@ -52,6 +52,7 @@ _MODES = ("text", "voice", "both")
 _PRIVACY_MODES = ("strict", "relaxed", "auto")
 _MEDIA_RESOLUTIONS = ("low", "high")
 _THINKING_LEVELS = ("minimal", "medium", "high")
+_FRAME_MODES = ("on_demand", "stream")
 
 _SYSTEM_INSTRUCTION_TEMPLATE = """\
 You are a powerful AI assistant with direct access to the user's local computer. \
@@ -199,6 +200,16 @@ class AppSettings(BaseSettings):
     share_screen: bool = False
     screen_fps: float = 1.0
     screen_monitor: int = 1
+    # How screen frames reach the model. "on_demand" sends a frame after each
+    # computer-use action, on request, and on a slow heartbeat; "stream" is the
+    # old continuous ``screen_fps`` feed. Streaming at 1 fps grew the context by
+    # ~390 tokens/second, which is what made late turns slow.
+    frame_mode: str = "on_demand"  # on_demand, stream
+    # Ambient frame cadence in on-demand mode: keeps the model roughly aware of
+    # the screen between actions without billing a frame every second.
+    frame_heartbeat_seconds: float = 8.0
+    # Floor on the spacing between any two frames, whatever asked for them.
+    frame_min_interval_seconds: float = 0.5
     input_device: str | None = None  # explicit sounddevice input name
     output_device: str | None = None  # explicit sounddevice output name
     half_duplex: bool = True
@@ -223,6 +234,10 @@ class AppSettings(BaseSettings):
     # target_tokens_tier1 (the model's larger effective budget there).
     target_tokens: int = 24000
     target_tokens_tier1: int = 32000
+    # Context size that triggers sliding-window compression. Without it the
+    # window never fires and sessions were observed reaching 258k prompt tokens
+    # against a 24k target.
+    trigger_tokens: int = 32000
     # "high" is the default: "low" measurably degraded computer-use sessions
     # (misread screens). Module 4 may make this tier-aware (low on Free).
     media_resolution: str = "high"  # low, high
@@ -252,6 +267,14 @@ class AppSettings(BaseSettings):
     def _validate_screen_fps(cls, value: float) -> float:
         if value <= 0:
             msg = f"screen_fps must be greater than 0 (got {value})"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("frame_mode")
+    @classmethod
+    def _validate_frame_mode(cls, value: str) -> str:
+        if value not in _FRAME_MODES:
+            msg = f"Invalid frame_mode '{value}'. Choose one of: {', '.join(_FRAME_MODES)}"
             raise ValueError(msg)
         return value
 
@@ -432,11 +455,16 @@ class AppSettings(BaseSettings):
                     silence_duration_ms=self.vad_silence_duration_ms,
                 ),
                 activity_handling=types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
+                # Without this the model's default folds every video frame seen
+                # so far into every turn, so each turn re-bills the whole frame
+                # history. ONLY_ACTIVITY scopes a turn to what happened in it.
+                turn_coverage=types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,
             ),
             output_audio_transcription=types.AudioTranscriptionConfig(),
             input_audio_transcription=types.AudioTranscriptionConfig(),
             context_window_compression=types.ContextWindowCompressionConfig(
-                sliding_window=types.SlidingWindow(target_tokens=self.target_tokens)
+                trigger_tokens=self.trigger_tokens,
+                sliding_window=types.SlidingWindow(target_tokens=self.target_tokens),
             ),
             session_resumption=types.SessionResumptionConfig(handle=resumption_handle),
         )
