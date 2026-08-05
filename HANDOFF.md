@@ -4,10 +4,201 @@
 
 - **Repository:** `C:\Users\Hp\projects\gemini-live-agent`
 - **Remote:** `https://github.com/bosscube1/Audio-video-agent-harness.git`
-- **Branch:** `Kimi-V2`
-- **Latest commit:** `c7d622d` — production-readiness fixes (file creation + yolo gating)
-- **Phases complete:** 1 (foundation), 2 (headless core extraction), 3 (session lifetime / resumption / barge-in), 4 (GUI shell on a QThread), 5 (GUI control surfaces + voice UX polish), 6 (persistence wiring + packaging), /goal production fixes (2026-08-01)
-- **Next:** manual Phase 6 gate with real hardware (see below), then cut-list candidates
+- **Branch:** `bongo`
+- **Latest commit:** the `feat(dual-tier)` commit at `bongo` HEAD (NOT pushed; local only)
+- **Phases complete:** 1–6 + /goal production fixes (2026-08-01), computer use (2026-08-02), **dual-tier optimization Modules 0–3 (2026-08-05)**
+- **Test suite:** 189 passed, ruff + mypy clean
+- **Next:** Module 4 (GUI tier integration), Module 5 (polish/README), then the deferred follow-ups listed below
+
+## Dual-tier optimization (2026-08-05, Modules 0–3 of 5)
+
+Driven by `PLAN.md` + the rate-limit report (both in repo root): the operator runs
+two Gemini API keys — Tier 1 paid and Free — and the app routes/fails over
+between 4 Live API pools (2 tiers × 2 models). Rate limits (verified from the
+AI Studio dashboard, stored in `core/tier_manager.py`):
+
+| Model | Tier 1 TPM | Free TPM | RPM/RPD |
+|:------|-----------:|---------:|:--------|
+| `gemini-2.5-flash-native-audio-preview-12-2025` | 1,000,000 | 1,000,000 | unlimited |
+| `gemini-3.1-flash-live-preview` (default) | 150,000 | 65,000 | unlimited |
+| `gemini-3.5-live-translate-preview` | 100,000 | 20,000 | unlimited |
+
+### Module 0 — foundation
+
+- **`core/tier_manager.py` (new):** `ModelTierLimits`, `TierConfig`, `TierManager`
+  with `select_tier(needs_privacy, has_video, model)`, a 60 s sliding-window TPM
+  tracker (`record_usage` / `tpm_headroom` / `reset_if_needed`), injectable clock.
+  Routing: privacy → Tier 1 (raises `ValueError` if no Tier 1 key — never silently
+  downgrades); video → most headroom (Tier 1 wins ties); audio-only → Free first.
+- **`settings/settings.py`:** `api_key_tier1`, `api_key_free` (legacy `api_key` =
+  fallback for tier1), `privacy_mode`, `prefer_free_tier`, `target_tokens` 24000
+  (now actually wired into `as_connect_config`), `target_tokens_tier1` 32000,
+  `media_resolution`, `enable_affective_dialog`, `thinking_level`,
+  `google_search_enabled`. All three API keys are excluded from `settings.json`.
+  Enums follow the existing tuple+`field_validator` pattern (no `Literal`).
+- Tests: `tests/test_tier_manager.py` (12).
+
+### Module 1 — 429 handling & fallback cascade
+
+- **`core/events.py`:** `RateLimitHit(model, tier, tpm_used, tpm_limit,
+  cooldown_seconds)` — the session emits it with empty tier/zeros; the supervisor
+  enriches it (pinned contract between the two).
+- **`core/session.py`:** `_is_rate_limit` covers both real SDK shapes (google-genai
+  2.16.0): in-band `ClientError` (`status=="RESOURCE_EXHAUSTED"` / code 429) and
+  WebSocket closes where only the reason string carries `RESOURCE_EXHAUSTED`/`429`/
+  `quota`. Exactly one event per session (`_rate_limit_emitted` guard), hooked into
+  all three error paths. `generation_complete` without `turn_complete` is promoted
+  via `model_copy(update={"turn_complete": True})` through the identical
+  turn-boundary path.
+- **`core/supervisor.py`:** optional `tier_manager` kwarg (no keys → legacy quota
+  path unchanged). `_EventTap` shim between session and event queue: enriches
+  `RateLimitHit`, records `UsageUpdate` deltas into the TPM tracker (**assumes
+  Live `usage_metadata` is cumulative per session — deltas would undercount if a
+  model ever reports per-turn increments**). Cascade anchored at first-429 pool:
+  same model/other tier → fallback model/same tier → fallback model/other tier →
+  backoff 15→30→60→300 s (+≤10 % jitter, honors `cooldown_seconds`), `SessionError`
+  countdown every 5 s, stays responsive to `Disconnect`. Success resets stage.
+  Backoff delays are module constants — tests patch them to ~0.
+- **Key switching without touching session.py:** `secrets.set_active_api_key()`
+  process-local override (consulted first by `get_api_key()`); model switch via
+  `settings.model_copy`. **`settings/secrets.py`:** `get/set_free_api_key()`
+  (`GOOGLE_API_KEY_FREE` env → keyring username `api_key_free`).
+- **`main.py`:** `_with_tier_keys()` resolves both keys into settings at startup
+  (`main.py` never constructs the Supervisor — `headless.py`/`app/bridge.py` do;
+  the Supervisor default-constructs its TierManager from settings+secrets, so both
+  entry points are covered).
+- Resumption handles survive pool switches (only cleared on `rejected_handle`).
+- Tests: `tests/test_session_rate_limit.py` (4), `tests/test_supervisor_fallback.py`
+  (4). `tests/fakes/fake_live.py` gained scripted receive errors +
+  `complete_generation()`.
+
+### Module 2 — VAD & audio
+
+- `vad_prefix_padding_ms` 300→**30**, `vad_silence_duration_ms` 800→**500**
+  (already settings fields; only defaults changed).
+- `audio_stream_end=True` sent inline on mic-gate close (send failures logged,
+  never kill the send loop) and exactly once on teardown if audio streamed
+  (`_audio_streamed` flag). **SDK constraint: `send_realtime_input` raises unless
+  exactly one kwarg is set — `audio_stream_end` must be sent alone.**
+- `UsageUpdate.estimated_usd` is now `float | None` (None = free/unknown → GUI
+  should show "Free"). Pricing table `_COST_PER_MILLION_TOKENS` at
+  `core/session.py:71` ($0.15 in / $0.60 out per 1M, prefix-matched).
+  **`LiveSession` always computes the paid estimate — nulling it for free-tier
+  sessions is still OPEN (belongs in the supervisor `_EventTap`, Module 4).**
+- Tests: `tests/test_session_vad_cost.py` (6).
+
+### Module 3 — tools & API features (heavily corrected against the live API)
+
+The plan's API names were partly invented; everything below is what google-genai
+2.16.0 + the live backend actually support:
+
+- **Scheduling:** no `ResponseSchedule`/`ScheduleType`/`ScheduledResponse` exists.
+  Real mechanism = `FunctionDeclaration.behavior` (`BLOCKING`/`NON_BLOCKING`) +
+  `FunctionResponse.scheduling` (`WHEN_IDLE`/`SILENT`/`INTERRUPT`).
+  `tools/registry.py`: `FUNCTION_SCHEDULES` (plain strings), `schedule_enums()`,
+  `tool_schedules()`, `build_tools(settings)` (new entry point; legacy
+  `build_function_declarations` preserved — the fallback shim in
+  `core/session.py::_build_tools` can be removed once `build_tools` is trusted).
+- **All function declarations consolidated into ONE `types.Tool`**; per-declaration
+  `behavior` stamped from `FUNCTION_SCHEDULES`; responses carry `scheduling` for
+  non-blocking tools.
+- **Google Search:** `types.Tool(google_search=types.GoogleSearch())` when
+  `google_search_enabled` — **but only on models that accept it** (see live
+  findings). No `web_search` tool exists anymore (Search grounding replaces it).
+- **Code execution:** `types.ToolCodeExecution` wired but gated behind
+  `CODE_EXECUTION_ENABLED = False` in `tools/registry.py` (no settings field).
+- **`LiveConnectConfig` fields set in `core/session.py::_session_config_fields`:**
+  `media_resolution`, `enable_affective_dialog` (model-gated),
+  `thinking_config=ThinkingConfig(thinking_level=...)`. **`safety_settings` is
+  deliberately NOT sent** (live findings).
+- Tests: `tests/test_tool_registry.py` (10), `tests/test_session_config.py` (14).
+
+### Live-API findings (verified by direct probes 2026-08-05 — trust these over PLAN.md)
+
+1. **`safetySettings` is rejected by the Live backend** (`1007 Unknown name
+   "safetySettings" at 'setup'`) even though the SDK serializes it. Omitted.
+2. **`gemini-2.5-flash-native-audio` (bare id) does not exist** on v1beta
+   bidiGenerateContent (`1008 not found`). The working id is
+   **`gemini-2.5-flash-native-audio-preview-12-2025`** — now the `fallback_model`
+   default and the TierManager limits key. Other dead ids probed:
+   `gemini-2.5-flash-preview-native-audio-dialog`,
+   `gemini-2.5-flash-exp-native-audio-thinking-dialog`,
+   `gemini-live-2.5-flash-preview`, `gemini-2.0-flash-live-001`.
+3. **`google_search` and `enable_affective_dialog` are model-dependent:** rejected
+   with a misleading `1011 quota/internal error` on `gemini-3.1-flash-live-preview`,
+   accepted on the 2.5 native-audio family. Gated by
+   `core/session.py::_supports_search_and_affective()`.
+4. **All 4 pools connect OK** with the full current config (verified after fixes).
+5. The old finding stands: native `computer_use` tool dies with 1011 on first
+   invocation — the nine `computer_*` function tools remain the mechanism.
+
+### Field-testing fixes (2026-08-05, post-Module 3)
+
+- **`computer_screenshot` moved `non_blocking_when_idle` → `blocking_interrupt`.**
+  As non-blocking, the model announced actions while the screenshot was deferred
+  until idle → "says it will do it, then nothing happens". Screenshot is on the
+  critical path of every computer-use action; never defer it.
+- **Defaults changed after A/B against pre-update behavior:** `thinking_level`
+  `"minimal"` → **`"medium"`** (minimal caused failed multi-step tasks),
+  `media_resolution` `"low"` → **`"high"`** (low caused screen misreads). Both are
+  persisted in the user's `settings.json` too. Tier-aware defaults (low on Free)
+  are a Module 4 item if TPM becomes a problem.
+- YOLO approval path audited and confirmed intact (GUI → `SetGatingMode` →
+  shared dispatcher; survives cascade reconnects). User confirmed approvals fine.
+
+### Files touched (all in commit `b35ee20`)
+
+Modified: `core/events.py`, `core/session.py`, `core/supervisor.py`, `main.py`,
+`settings/__init__.py`, `settings/secrets.py`, `settings/settings.py`,
+`tests/fakes/fake_live.py`, `tools/__init__.py`, `tools/registry.py`.
+New: `core/tier_manager.py`, `tests/test_tier_manager.py`,
+`tests/test_supervisor_fallback.py`, `tests/test_session_rate_limit.py`,
+`tests/test_session_vad_cost.py`, `tests/test_session_config.py`,
+`tests/test_tool_registry.py`.
+
+### Operator configuration
+
+- Keys live in Windows Credential Manager, service `GeminiLiveAgent`: username
+  `api_key` (Tier 1 paid), `api_key_free` (Free). Env overrides: `GOOGLE_API_KEY`
+  / `GOOGLE_API_KEY_FREE` (or `GEMINI_API_KEY_TIER1` / `GEMINI_API_KEY_FREE`).
+  Set via `settings.secrets.set_api_key()` / `set_free_api_key()`.
+  **The paid key has an atypical format (`AQ.Ab8...`) but is confirmed working.**
+- GUI has no dual-key fields — keys are env/keyring only (Module 4 candidate).
+
+## Remaining work (Modules 4–5 + deferred follow-ups)
+
+### Module 4 — GUI integration (~3 h, depends on 0–3)
+
+Per `PLAN.md`: tier indicator in status bar (green Tier 1 / yellow Free,
+clickable), "Private Session" checkbox forcing Tier 1 (auto-on with Computer
+Use/screen share), TPM usage meter (green <50 % / yellow 50–80 % / red >80 %),
+per-session cost display on Tier 1 / "Free tier — no cost" on Free, cooldown
+countdown during backoff, bridge wiring for `RateLimitHit`/tier-switch/
+`SessionError` signals. **Also pick up these deferred items:**
+
+- Null `UsageUpdate.estimated_usd` for free-tier sessions in the supervisor
+  `_EventTap` (session can't know its tier).
+- Tier-aware media resolution default (low on Free, high on Tier 1) — user
+  testing showed `high` is needed for computer use; only drop to `low` when TPM
+  pressure demands it.
+- Optional: dual-key fields in the GUI settings dialog.
+
+### Module 5 — polish (~1 h)
+
+- Audit/trim the system instruction (~400 tok of duplicated tool descriptions).
+- README: dual-tier setup, env vars, routing table.
+- Remove the `build_function_declarations` fallback shim in
+  `core/session.py::_build_tools` once `build_tools` is trusted.
+
+### Other known loose ends
+
+- `ProactivityConfig(proactive_audio)` exists in the SDK but no setting sources
+  it — decide if wanted.
+- `CODE_EXECUTION_ENABLED` flag exists but is off and untested live.
+- 1011 errors from the Live API are ambiguous (quota vs unsupported feature vs
+  transient) — when a new config field fails, bisect it the way
+  `safetySettings`/`google_search` were diagnosed (bare config → add one field
+  at a time).
 
 ## Computer use (mouse/keyboard control, 2026-08-02)
 

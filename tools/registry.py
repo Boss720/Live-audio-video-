@@ -7,7 +7,7 @@ function docstrings.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, get_args, get_origin
+from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 from google.genai import types
 from pydantic import BaseModel, Field
@@ -305,23 +305,118 @@ COMPUTER_TOOLS: list[ToolSpec] = [
 
 COMPUTER_TOOL_NAMES: frozenset[str] = frozenset(spec.name for spec in COMPUTER_TOOLS)
 
+# Function-call scheduling classification (Module 3). Values are plain strings
+# so callers can serialize them; ``schedule_enums`` maps them to the SDK enums
+# (``types.Behavior`` on the declaration, ``types.FunctionResponseScheduling``
+# on the function response).
+#
+# - ``non_blocking_when_idle``: read-only tools; the model keeps talking and the
+#   result is folded in when the model is idle.
+# - ``non_blocking_silent``: fire-and-forget tools whose result should never
+#   trigger generation.
+# - ``blocking_interrupt``: mutating/destructive tools; the model waits for the
+#   result and ongoing generation is interrupted.
+FUNCTION_SCHEDULES: dict[str, str] = {
+    "read_file": "non_blocking_when_idle",
+    "write_file": "blocking_interrupt",
+    "list_directory": "non_blocking_when_idle",
+    "delete_file": "blocking_interrupt",
+    "run_command": "blocking_interrupt",
+    "computer_mouse_move": "non_blocking_silent",
+    "computer_left_click": "blocking_interrupt",
+    "computer_right_click": "blocking_interrupt",
+    "computer_double_click": "blocking_interrupt",
+    "computer_type": "blocking_interrupt",
+    "computer_key": "blocking_interrupt",
+    "computer_drag": "blocking_interrupt",
+    "computer_scroll": "blocking_interrupt",
+    # Blocking on purpose: the screenshot is on the critical path of every
+    # computer-use action. As non_blocking_when_idle the model kept talking
+    # ("I'll do it") while the frame was deferred until idle — actions stalled.
+    "computer_screenshot": "blocking_interrupt",
+}
+
+_SCHEDULE_ENUMS: dict[
+    str, tuple[types.Behavior, types.FunctionResponseScheduling]
+] = {
+    "non_blocking_when_idle": (
+        types.Behavior.NON_BLOCKING,
+        types.FunctionResponseScheduling.WHEN_IDLE,
+    ),
+    "non_blocking_silent": (
+        types.Behavior.NON_BLOCKING,
+        types.FunctionResponseScheduling.SILENT,
+    ),
+    "blocking_interrupt": (
+        types.Behavior.BLOCKING,
+        types.FunctionResponseScheduling.INTERRUPT,
+    ),
+}
+
+# Safe default for a tool missing from FUNCTION_SCHEDULES: block on the result.
+_DEFAULT_SCHEDULE = "blocking_interrupt"
+
+
+def tool_schedules() -> dict[str, str]:
+    """Return the plain-string scheduling classification for every tool."""
+    return dict(FUNCTION_SCHEDULES)
+
+
+def schedule_enums(
+    name: str,
+) -> tuple[types.Behavior, types.FunctionResponseScheduling]:
+    """Map a tool's schedule classification to the SDK enums.
+
+    Returns ``(behavior, response_scheduling)``: ``behavior`` belongs on the
+    ``FunctionDeclaration``, ``response_scheduling`` on the ``FunctionResponse``
+    (ignored by the API for BLOCKING calls).
+    """
+    return _SCHEDULE_ENUMS[FUNCTION_SCHEDULES.get(name, _DEFAULT_SCHEDULE)]
+
+
+def _declaration_for(spec: ToolSpec) -> types.FunctionDeclaration:
+    behavior, _ = schedule_enums(spec.name)
+    return types.FunctionDeclaration(
+        name=spec.name,
+        description=spec.description,
+        parameters=_build_schema(spec.args_schema),
+        behavior=behavior,
+    )
+
 
 def build_function_declarations(*, computer_use: bool = False) -> Sequence[types.Tool]:
     """Build explicit Gemini tools from function declarations.
 
-    The Live SDK expects ``list[types.Tool]``; each tool wraps one function
-    declaration. ``computer_use`` adds the mouse/keyboard control tools.
+    The Live SDK expects ``list[types.Tool]``; all declarations are consolidated
+    into a single ``types.Tool`` (the API allows up to 512 per tool) with each
+    declaration's ``behavior`` set from ``FUNCTION_SCHEDULES``. ``computer_use``
+    adds the mouse/keyboard control tools.
     """
     specs = ALL_TOOLS + COMPUTER_TOOLS if computer_use else ALL_TOOLS
     return [
-        types.Tool(
-            function_declarations=[
-                types.FunctionDeclaration(
-                    name=spec.name,
-                    description=spec.description,
-                    parameters=_build_schema(spec.args_schema),
-                )
-            ]
-        )
-        for spec in specs
+        types.Tool(function_declarations=[_declaration_for(spec) for spec in specs])
     ]
+
+
+# The SDK's code-execution tool exists (types.ToolCodeExecution) but there is no
+# AppSettings flag for it yet; flip this to True to enable it.
+CODE_EXECUTION_ENABLED = False
+
+
+def build_tools(settings: Any) -> list[types.Tool]:
+    """Build the consolidated tool list for a Live session.
+
+    One ``types.Tool`` holding every function declaration, plus a Google Search
+    tool when ``settings.google_search_enabled`` and a code-execution tool when
+    ``CODE_EXECUTION_ENABLED`` is on.
+    """
+    tools: list[types.Tool] = list(
+        build_function_declarations(
+            computer_use=bool(getattr(settings, "computer_use_enabled", False))
+        )
+    )
+    if getattr(settings, "google_search_enabled", False):
+        tools.append(types.Tool(google_search=types.GoogleSearch()))
+    if CODE_EXECUTION_ENABLED:
+        tools.append(types.Tool(code_execution=types.ToolCodeExecution()))
+    return tools

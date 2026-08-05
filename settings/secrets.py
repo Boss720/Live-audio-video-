@@ -9,10 +9,22 @@ import keyring
 
 _SERVICE = "GeminiLiveAgent"
 _USERNAME = "api_key"
+_USERNAME_FREE = "api_key_free"
+
+# Process-local override consulted before env/keyring. The supervisor sets this
+# to point a reconnect epoch at the Tier 1 or Free key without mutating the
+# process-global environment.
+_active_api_key: str | None = None
 
 
 def get_api_key() -> str | None:
-    """Return the API key from the environment or OS credential store."""
+    """Return the API key from the environment or OS credential store.
+
+    When the supervisor has activated a specific tier key for the current
+    session epoch (see ``set_active_api_key``), that key wins.
+    """
+    if _active_api_key:
+        return _active_api_key
     env_key = os.environ.get("GOOGLE_API_KEY")
     if env_key:
         return env_key
@@ -20,6 +32,31 @@ def get_api_key() -> str | None:
         return keyring.get_password(_SERVICE, _USERNAME)
     except Exception:  # pragma: no cover - keyring failures should not crash the app
         return None
+
+
+def set_active_api_key(key: str | None) -> None:
+    """Override the key returned by ``get_api_key`` until cleared with ``None``."""
+    global _active_api_key
+    _active_api_key = key
+
+
+def get_free_api_key() -> str | None:
+    """Return the Free tier API key from the environment or OS credential store."""
+    env_key = os.environ.get("GOOGLE_API_KEY_FREE")
+    if env_key:
+        return env_key
+    try:
+        return keyring.get_password(_SERVICE, _USERNAME_FREE)
+    except Exception:  # pragma: no cover - keyring failures should not crash the app
+        return None
+
+
+def set_free_api_key(key: str) -> None:
+    """Store the Free tier API key in the OS credential store."""
+    if not key:
+        msg = "API key cannot be empty"
+        raise ValueError(msg)
+    keyring.set_password(_SERVICE, _USERNAME_FREE, key)
 
 
 def set_api_key(key: str) -> None:

@@ -22,6 +22,7 @@ def _server_content(
     output_text: str | None = None,
     turn_complete: bool = False,
     interrupted: bool = False,
+    generation_complete: bool = False,
 ) -> types.LiveServerContent:
     parts: list[types.Part] = []
     if model_text:
@@ -36,6 +37,7 @@ def _server_content(
         else None,
         turn_complete=turn_complete,
         interrupted=interrupted,
+        generation_complete=generation_complete,
     )
 
 
@@ -79,6 +81,7 @@ class FakeLiveSession:
 
         self._drop_next_send = False
         self._drop_next_receive = False
+        self._next_receive_exc: BaseException | None = None
         self._rejected_fc_ids: set[str] = set()
 
         if preloaded_messages:
@@ -103,13 +106,13 @@ class FakeLiveSession:
                 break
             if self._drop_next_receive:
                 self._drop_next_receive = False
-                raise FakeSessionError("connection dropped")
+                raise self._take_receive_error()
             msg = await self._inbox.get()
             if msg is None:
                 break
             if self._drop_next_receive:
                 self._drop_next_receive = False
-                raise FakeSessionError("connection dropped")
+                raise self._take_receive_error()
             yield msg
 
     async def send_client_content(
@@ -186,6 +189,10 @@ class FakeLiveSession:
         """Enqueue a barge-in: the server aborted the model turn."""
         self.emit(_message(server_content=_server_content(interrupted=True)))
 
+    def complete_generation(self) -> None:
+        """Enqueue a ``generation_complete`` signal without ``turn_complete``."""
+        self.emit(_message(server_content=_server_content(generation_complete=True)))
+
     def request_tool(self, call_id: str, name: str, args: dict[str, Any]) -> None:
         """Enqueue a tool call request from the server."""
         self.emit(
@@ -255,6 +262,16 @@ class FakeLiveSession:
     def drop_next_receive(self) -> None:
         """Make the next server receive raise ``FakeSessionError``."""
         self._drop_next_receive = True
+
+    def fail_next_receive(self, exc: BaseException) -> None:
+        """Make the next server receive raise ``exc`` (e.g. a 429 APIError)."""
+        self._drop_next_receive = True
+        self._next_receive_exc = exc
+
+    def _take_receive_error(self) -> BaseException:
+        exc = self._next_receive_exc or FakeSessionError("connection dropped")
+        self._next_receive_exc = None
+        return exc
 
     def reject_fc_id(self, call_id: str) -> None:
         """Make ``send_tool_response`` raise for the given function call id."""

@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import random
+from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -18,7 +20,7 @@ from google.genai import types
 
 import tools._state as tools_state
 from audit.journal import Journal
-from core.commands import AgentCommand
+from core.commands import AgentCommand, Disconnect
 from core.dispatcher import ToolDispatcher
 from core.events import (
     AudioLevel,
@@ -26,8 +28,12 @@ from core.events import (
     ConnectionStateChanged,
     ContextReset,
     DisconnectReason,
+    RateLimitHit,
+    SessionError,
+    UsageUpdate,
 )
 from core.session import LiveSession
+from core.tier_manager import TierConfig, TierManager
 from core.turn_state import TurnState
 from media import devices
 from media.microphone import Microphone
@@ -36,6 +42,7 @@ from media.speaker import Speaker
 from obs.logging_setup import get_logger
 from persist.store import Store
 from policy import PolicyEngine
+from settings import secrets
 from settings.settings import AppSettings
 from tools.registry import ToolResult
 
@@ -51,6 +58,36 @@ _BUDGETS: dict[str, int] = {
     "rejected_handle": 6,
     "quota": 3,
 }
+
+# Rate-limit fallback ladder: once every (tier, model) pool is exhausted, back
+# off 15s -> 30s -> 60s -> 300s (plus jitter, capped at the last rung) and
+# emit a countdown tick every few seconds so the GUI can show the wait.
+_RATE_LIMIT_BACKOFF_LADDER = (15.0, 30.0, 60.0, 300.0)
+_BACKOFF_TICK_SECONDS = 5.0
+
+
+class _EventTap:
+    """Event-queue shim placed between a ``LiveSession`` and the real queue.
+
+    Every event is forwarded unchanged (``RateLimitHit`` is first enriched
+    with the supervisor's tier tracking, since the session does not know which
+    key it is running on), while ``UsageUpdate``/``RateLimitHit`` metadata is
+    captured for TPM headroom tracking and the fallback cascade.
+    """
+
+    def __init__(
+        self,
+        inner: asyncio.Queue[Any],
+        on_event: Callable[[Any], Any],
+    ) -> None:
+        self._inner = inner
+        self._on_event = on_event
+
+    async def put(self, event: Any) -> None:
+        await self._inner.put(self._on_event(event))
+
+    def put_nowait(self, event: Any) -> None:
+        self._inner.put_nowait(self._on_event(event))
 
 
 class Supervisor:
@@ -70,6 +107,10 @@ class Supervisor:
         Persistent SQLite store for turns, tool calls, and resumption handles.
     run_id:
         Identifier for this run.
+    tier_manager:
+        Dual-tier key router. When omitted, one is built from the API keys in
+        settings/secrets; when no keys are configured at all, the supervisor
+        falls back to the legacy single-key behavior (no fallback cascade).
     """
 
     def __init__(
@@ -80,6 +121,8 @@ class Supervisor:
         journal: Journal,
         store: Store,
         run_id: str,
+        *,
+        tier_manager: TierManager | None = None,
     ) -> None:
         self._settings = settings
         self._command_queue = command_queue
@@ -93,6 +136,27 @@ class Supervisor:
         self._pending_tool_results: list[tuple[str, str, ToolResult]] = []
         self._failure_log: dict[str, list[datetime]] = {}
         self._live_session: LiveSession | None = None
+
+        # Rate-limit fallback cascade state (Module 1). ``_current_tier``/
+        # ``_current_model`` identify the pool the next epoch connects with;
+        # ``_cascade_anchor`` pins the pool where the current cascade started
+        # so the fallback order stays stable across epochs.
+        if tier_manager is None:
+            tier_manager = self._default_tier_manager()
+        self._current_tier: TierConfig | None = None
+        if tier_manager is not None:
+            self._current_tier = tier_manager.get_tier("tier1") or tier_manager.get_tier(
+                "free"
+            )
+            if self._current_tier is None:
+                tier_manager = None  # no keys configured: legacy single-key path
+        self._tier_manager = tier_manager
+        self._current_model = settings.model
+        self._exhausted_pools: set[tuple[str, str]] = set()
+        self._cascade_anchor: tuple[TierConfig, str] | None = None
+        self._rate_limit_backoff_stage = 0
+        self._rate_limit_hit: RateLimitHit | None = None
+        self._last_usage_total = 0
 
         self._mic: Microphone | None = None
         self._speaker: Speaker | None = None
@@ -145,10 +209,22 @@ class Supervisor:
 
             while True:
                 self._dispatcher.set_epoch(self._epoch)
+                self._rate_limit_hit = None
+                self._last_usage_total = 0
+                if self._tier_manager is not None and self._current_tier is not None:
+                    # Point the session at the current pool's key and model.
+                    # The override lives inside secrets.get_api_key, which the
+                    # session already calls, so no session.py change is needed.
+                    secrets.set_active_api_key(self._current_tier.api_key)
+                    session_queue: Any = _EventTap(
+                        self._event_queue, self._observe_session_event
+                    )
+                else:
+                    session_queue = self._event_queue
                 live_session = LiveSession(
-                    settings=self._settings,
+                    settings=self._session_settings(),
                     command_queue=self._command_queue,
-                    event_queue=self._event_queue,
+                    event_queue=session_queue,
                     journal=self._journal,
                     store=self._store,
                     run_id=self._run_id,
@@ -177,6 +253,18 @@ class Supervisor:
                     return reason
 
                 category = self._classify(reason)
+
+                if self._tier_manager is not None and (
+                    category == "quota" or self._rate_limit_hit is not None
+                ):
+                    # Rate limited: run the tier/model fallback cascade instead
+                    # of the generic failure-budget path.
+                    self._dispatcher.deny_all_pending(reason="connection_lost")
+                    outcome = await self._handle_rate_limit(reason)
+                    if outcome is not None:
+                        return outcome
+                    self._epoch += 1
+                    continue
 
                 if category == "go_away":
                     await self._emit(
@@ -215,6 +303,7 @@ class Supervisor:
                 self._epoch += 1
         finally:
             self._live_session = None
+            secrets.set_active_api_key(None)
             self._store.end_run(self._run_id)
             await self._emit(ConnectionStateChanged(ConnectionState.DISCONNECTED))
             if meter_task is not None:
@@ -246,6 +335,11 @@ class Supervisor:
 
     async def _on_connected(self, live_session: LiveSession) -> None:
         """Seed context on a fresh connect and drain queued tool results."""
+        # A successful connect proves the current pool works again: reset the
+        # rate-limit cascade so a later 429 starts a fresh fallback sequence.
+        self._rate_limit_backoff_stage = 0
+        self._cascade_anchor = None
+        self._exhausted_pools.clear()
         if self._resumption_handle is None:
             prior_turns = self._store.get_turns(self._run_id)
             if prior_turns:
@@ -401,6 +495,231 @@ class Supervisor:
         ):
             return reason.code
         return "transient"
+
+    def _default_tier_manager(self) -> TierManager | None:
+        """Build a ``TierManager`` from the keys in settings/secrets."""
+        tier1_key = (
+            self._settings.api_key_tier1
+            or self._settings.api_key
+            or secrets.get_api_key()
+        )
+        free_key = self._settings.api_key_free or secrets.get_free_api_key()
+        if not tier1_key and not free_key:
+            return None
+        return TierManager(tier1_key=tier1_key, free_key=free_key)
+
+    def _session_settings(self) -> AppSettings:
+        """Return the settings for the next epoch, with the current model applied."""
+        if self._current_model == self._settings.model:
+            return self._settings
+        return self._settings.model_copy(update={"model": self._current_model})
+
+    def _observe_session_event(self, event: Any) -> Any:
+        """Tap callback: track usage/rate limits and enrich ``RateLimitHit``.
+
+        Returns the event to forward to the real queue (a replaced copy for
+        ``RateLimitHit`` so the GUI sees the tier the session was on).
+        """
+        if isinstance(event, RateLimitHit):
+            tier = self._current_tier
+            limits = (
+                tier.limits.get(self._current_model) if tier is not None else None
+            )
+            enriched = replace(
+                event,
+                model=self._current_model,
+                tier=tier.tier_name if tier is not None else event.tier,
+                tpm_used=tier.tpm_used if tier is not None else event.tpm_used,
+                tpm_limit=limits.tpm_limit if limits is not None else event.tpm_limit,
+            )
+            self._rate_limit_hit = enriched
+            return enriched
+        if isinstance(event, UsageUpdate):
+            self._record_tier_usage(event)
+        return event
+
+    def _record_tier_usage(self, event: UsageUpdate) -> None:
+        """Feed token usage into the TierManager's rolling TPM tracker.
+
+        Live API ``usage_metadata`` totals are cumulative within a session, so
+        only the delta since the previous event is recorded.
+        """
+        if self._tier_manager is None or self._current_tier is None:
+            return
+        delta = max(0, event.total_tokens - self._last_usage_total)
+        self._last_usage_total = max(self._last_usage_total, event.total_tokens)
+        if delta:
+            self._tier_manager.record_usage(
+                self._current_tier, self._current_model, delta
+            )
+
+    async def _handle_rate_limit(self, reason: DisconnectReason) -> DisconnectReason | None:
+        """Run the tier/model fallback cascade after a rate-limit disconnect.
+
+        Returns ``None`` when the reconnect loop should immediately start the
+        next epoch on a fresh pool, or a ``DisconnectReason`` when the run
+        should end (user disconnect during the backoff countdown).
+        """
+        if self._current_tier is None or self._tier_manager is None:
+            return None  # pragma: no cover - guarded by the caller
+        if self._cascade_anchor is None:
+            self._cascade_anchor = (self._current_tier, self._current_model)
+        self._exhausted_pools.add((self._current_tier.tier_name, self._current_model))
+
+        next_pool = self._next_pool()
+        if next_pool is not None:
+            tier, model = next_pool
+            if model != self._current_model:
+                self._switch_model(model, tier)
+            else:
+                self._switch_tier(tier)
+            await self._emit(
+                ConnectionStateChanged(
+                    ConnectionState.RECONNECTING,
+                    detail=(
+                        f"rate limited; retrying on {tier.tier_name} key "
+                        f"with model {model}"
+                    ),
+                )
+            )
+            return None
+
+        # All four pools (2 tiers x 2 models) are exhausted: back off, then
+        # start the cascade over from the primary pool.
+        await self._emit(
+            ConnectionStateChanged(
+                ConnectionState.RECONNECTING,
+                detail="all API key/model pools rate limited",
+            )
+        )
+        outcome = await self._rate_limit_backoff()
+        self._exhausted_pools.clear()
+        self._cascade_anchor = None
+        self._reset_primary_pool()
+        return outcome
+
+    def _next_pool(self) -> tuple[TierConfig, str] | None:
+        """Return the next (tier, model) pool in cascade order, or ``None``.
+
+        Anchored at the pool where the cascade started: same model on the
+        other tier, fallback model on the anchor tier, fallback model on the
+        other tier. Pools already exhausted or without TPM headroom are
+        skipped.
+        """
+        if self._cascade_anchor is None or self._tier_manager is None:
+            return None  # pragma: no cover - guarded by the caller
+        anchor_tier, anchor_model = self._cascade_anchor
+        other_tier = self._other_tier(anchor_tier)
+        fallback_model = self._settings.fallback_model
+
+        candidates: list[tuple[TierConfig, str]] = []
+        if other_tier is not None:
+            candidates.append((other_tier, anchor_model))
+        if fallback_model and fallback_model != anchor_model:
+            candidates.append((anchor_tier, fallback_model))
+            if other_tier is not None:
+                candidates.append((other_tier, fallback_model))
+
+        for tier, model in candidates:
+            if (tier.tier_name, model) in self._exhausted_pools:
+                continue
+            if self._tier_manager.tpm_headroom(tier, model) <= 0:
+                continue
+            return tier, model
+        return None
+
+    def _other_tier(self, tier: TierConfig) -> TierConfig | None:
+        """Return the opposite configured tier, or ``None`` if single-keyed."""
+        if self._tier_manager is None:
+            return None
+        other_name = "free" if tier.tier_name == "tier1" else "tier1"
+        return self._tier_manager.get_tier(other_name)
+
+    def _switch_tier(self, tier: TierConfig) -> None:
+        """Move the next epoch to ``tier``'s API key, keeping the current model.
+
+        The rate-limited session has already terminated by the time the
+        cascade runs (a 429 ends the WebSocket), so there is nothing left to
+        disconnect; the run loop starts the new session with this tier's key
+        applied through ``secrets.set_active_api_key``.
+        """
+        logger.info(
+            "Rate limit: switching tier %s -> %s (model %s)",
+            self._current_tier.tier_name if self._current_tier else "?",
+            tier.tier_name,
+            self._current_model,
+        )
+        self._current_tier = tier
+
+    def _switch_model(self, model: str, tier: TierConfig) -> None:
+        """Move the next epoch to the fallback ``model`` on ``tier``'s key."""
+        logger.info(
+            "Rate limit: switching model %s -> %s (tier %s)",
+            self._current_model,
+            model,
+            tier.tier_name,
+        )
+        self._current_tier = tier
+        self._current_model = model
+
+    def _reset_primary_pool(self) -> None:
+        """Return to the primary model and preferred tier after a full backoff."""
+        if self._tier_manager is None:
+            return
+        self._current_model = self._settings.model
+        self._current_tier = (
+            self._tier_manager.get_tier("tier1")
+            or self._tier_manager.get_tier("free")
+            or self._current_tier
+        )
+
+    async def _rate_limit_backoff(self) -> DisconnectReason | None:
+        """Back off after every tier/model pool is exhausted.
+
+        Walks the 15s -> 30s -> 60s -> 300s ladder (capped at the last rung,
+        plus up to 10% jitter), emitting a ``SessionError`` countdown every
+        tick so the GUI can display the wait. A ``Disconnect`` command during
+        the wait ends the run.
+        """
+        rung = min(self._rate_limit_backoff_stage, len(_RATE_LIMIT_BACKOFF_LADDER) - 1)
+        self._rate_limit_backoff_stage += 1
+        delay = _RATE_LIMIT_BACKOFF_LADDER[rung]
+        delay += random.uniform(0.0, delay * 0.1)
+        if self._rate_limit_hit is not None:
+            delay = max(delay, self._rate_limit_hit.cooldown_seconds)
+
+        remaining = delay
+        while remaining > 0:
+            await self._emit(
+                SessionError(
+                    message=(
+                        "All API keys are rate limited; "
+                        f"retrying in {max(1, int(remaining))}s..."
+                    ),
+                    fatal=False,
+                )
+            )
+            if isinstance(self._poll_command(), Disconnect):
+                return DisconnectReason(
+                    "user_request", "disconnect during rate-limit backoff"
+                )
+            tick = min(_BACKOFF_TICK_SECONDS, remaining)
+            await asyncio.sleep(tick)
+            remaining -= tick
+        return None
+
+    def _poll_command(self) -> AgentCommand | None:
+        """Non-blocking command check; non-Disconnect commands are re-queued."""
+        try:
+            cmd = self._command_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return None
+        if not isinstance(cmd, Disconnect):
+            # Leave it for the next session's send loop. Under contention this
+            # can reorder the queue; acceptable during a rate-limit backoff.
+            self._command_queue.put_nowait(cmd)
+            return None
+        return cmd
 
     def _record_failure(self, category: str) -> None:
         """Append a timestamped failure for ``category``."""

@@ -9,6 +9,8 @@ from tools._state import set_gating_mode, set_policy, set_workspace
 from tools.fs import delete_file, list_directory, read_file, write_file
 from tools.registry import (
     ALL_TOOLS,
+    CODE_EXECUTION_ENABLED,
+    FUNCTION_SCHEDULES,
     DeleteFileArgs,
     ListDirectoryArgs,
     ReadFileArgs,
@@ -17,11 +19,16 @@ from tools.registry import (
     ToolSpec,
     WriteFileArgs,
     build_function_declarations,
+    build_tools,
+    schedule_enums,
+    tool_schedules,
 )
 from tools.shell import run_command
 
 __all__ = [
     "ALL_TOOLS",
+    "CODE_EXECUTION_ENABLED",
+    "FUNCTION_SCHEDULES",
     "DeleteFileArgs",
     "ListDirectoryArgs",
     "ReadFileArgs",
@@ -30,13 +37,16 @@ __all__ = [
     "ToolSpec",
     "WriteFileArgs",
     "build_function_declarations",
+    "build_tools",
     "delete_file",
     "list_directory",
     "read_file",
     "run_command",
+    "schedule_enums",
     "set_gating_mode",
     "set_policy",
     "set_workspace",
+    "tool_schedules",
     "write_file",
 ]
 

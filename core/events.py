@@ -111,6 +111,22 @@ class SessionError:
 
 
 @dataclass(frozen=True, slots=True)
+class RateLimitHit:
+    """The API terminated the session with a rate-limit (429) error.
+
+    ``tier``/``tpm_used``/``tpm_limit`` are filled in by the supervisor when
+    the emitting component does not track them locally.
+    """
+
+    model: str
+    tier: str
+    tpm_used: int
+    tpm_limit: int
+    cooldown_seconds: float = 0.0
+    timestamp: datetime = field(default_factory=_utc_now, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
 class ContextReset:
     """Emitted when a reconnect could not resume and history was rebuilt."""
 
@@ -143,7 +159,9 @@ class UsageUpdate:
     audio_tokens: int = 0
     video_tokens: int = 0
     total_tokens: int = 0
-    estimated_usd: float = 0.0
+    # Cumulative session cost estimate; None = free tier / unknown, so the
+    # GUI can show "Free" instead of a dollar figure.
+    estimated_usd: float | None = None
     timestamp: datetime = field(default_factory=_utc_now, compare=False)
 
 
@@ -159,6 +177,7 @@ AgentEvent = (
     | AudioLevel
     | SessionError
     | SessionExpiring
+    | RateLimitHit
     | ContextReset
     | UsageUpdate
 )

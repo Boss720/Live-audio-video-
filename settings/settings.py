@@ -46,6 +46,9 @@ _AVAILABLE_VOICES = (
     "Sulafat",
 )
 _MODES = ("text", "voice", "both")
+_PRIVACY_MODES = ("strict", "relaxed", "auto")
+_MEDIA_RESOLUTIONS = ("low", "high")
+_THINKING_LEVELS = ("minimal", "medium", "high")
 
 _SYSTEM_INSTRUCTION_TEMPLATE = """\
 You are a powerful AI assistant with direct access to the user's local computer. \
@@ -172,20 +175,24 @@ class AppSettings(BaseSettings):
     )
 
     model: str = "gemini-3.1-flash-live-preview"
-    fallback_model: str | None = "gemini-2.5-flash-native-audio"
+    # Verified against the Live API (bidiGenerateContent): the bare id
+    # "gemini-2.5-flash-native-audio" is rejected; the dated preview id works.
+    fallback_model: str | None = "gemini-2.5-flash-native-audio-preview-12-2025"
     voice: str = "Puck"
     mode: str = "both"  # text, voice, both
     working_dir: Path = Field(default_factory=Path.cwd)
     workspace_root: Path = Field(default_factory=Path.cwd)
-    api_key: str | None = None  # legacy env override
+    api_key: str | None = None  # legacy env override; fallback for api_key_tier1
+    api_key_tier1: str | None = None  # Tier 1 (paid) API key
+    api_key_free: str | None = None  # Free tier API key
     share_screen: bool = False
     screen_fps: float = 1.0
     screen_monitor: int = 1
     input_device: str | None = None  # explicit sounddevice input name
     output_device: str | None = None  # explicit sounddevice output name
     half_duplex: bool = True
-    vad_prefix_padding_ms: int = 300
-    vad_silence_duration_ms: int = 800
+    vad_prefix_padding_ms: int = 30
+    vad_silence_duration_ms: int = 500
     yolo: bool = False
     headless: bool = True
     debug: bool = False
@@ -198,6 +205,20 @@ class AppSettings(BaseSettings):
     # Wake-word gating: voice input is ignored unless it contains the wake word.
     wake_word_enabled: bool = False
     wake_word: str = "Bongo"
+    # Dual-tier rate-limit optimization (Module 0).
+    privacy_mode: str = "auto"  # strict, relaxed, auto
+    prefer_free_tier: bool = True
+    # Sliding-window compression target; Free tier default. Tier 1 uses
+    # target_tokens_tier1 (the model's larger effective budget there).
+    target_tokens: int = 24000
+    target_tokens_tier1: int = 32000
+    # "high" is the default: "low" measurably degraded computer-use sessions
+    # (misread screens). Module 4 may make this tier-aware (low on Free).
+    media_resolution: str = "high"  # low, high
+    enable_affective_dialog: bool = True
+    # "medium" is the default: "minimal" caused failed multi-step tasks.
+    thinking_level: str = "medium"  # minimal, medium, high
+    google_search_enabled: bool = True
 
     @field_validator("voice")
     @classmethod
@@ -227,6 +248,31 @@ class AppSettings(BaseSettings):
     @classmethod
     def _validate_wake_word(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("privacy_mode")
+    @classmethod
+    def _validate_privacy_mode(cls, value: str) -> str:
+        if value not in _PRIVACY_MODES:
+            msg = f"Invalid privacy_mode '{value}'. Choose one of: {', '.join(_PRIVACY_MODES)}"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("media_resolution")
+    @classmethod
+    def _validate_media_resolution(cls, value: str) -> str:
+        if value not in _MEDIA_RESOLUTIONS:
+            choices = ", ".join(_MEDIA_RESOLUTIONS)
+            msg = f"Invalid media_resolution '{value}'. Choose one of: {choices}"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("thinking_level")
+    @classmethod
+    def _validate_thinking_level(cls, value: str) -> str:
+        if value not in _THINKING_LEVELS:
+            msg = f"Invalid thinking_level '{value}'. Choose one of: {', '.join(_THINKING_LEVELS)}"
+            raise ValueError(msg)
+        return value
 
     @model_validator(mode="after")
     def _validate_wake_word_enabled(self) -> AppSettings:
@@ -259,7 +305,9 @@ class AppSettings(BaseSettings):
         settings_dir.mkdir(parents=True, exist_ok=True)
         settings_file = settings_dir / "settings.json"
 
-        data = self.model_dump(exclude={"api_key", "headless", "debug"})
+        data = self.model_dump(
+            exclude={"api_key", "api_key_tier1", "api_key_free", "headless", "debug"}
+        )
         settings_file.write_text(
             json.dumps(data, indent=2, sort_keys=True, default=str),
             encoding="utf-8",
@@ -354,7 +402,7 @@ class AppSettings(BaseSettings):
             output_audio_transcription=types.AudioTranscriptionConfig(),
             input_audio_transcription=types.AudioTranscriptionConfig(),
             context_window_compression=types.ContextWindowCompressionConfig(
-                sliding_window=types.SlidingWindow(target_tokens=16000)
+                sliding_window=types.SlidingWindow(target_tokens=self.target_tokens)
             ),
             session_resumption=types.SessionResumptionConfig(handle=resumption_handle),
         )

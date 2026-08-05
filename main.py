@@ -17,7 +17,13 @@ import sys
 from pathlib import Path
 
 from headless import run_headless
-from settings import AppSettings, get_api_key, migrate_dotenv, set_api_key
+from settings import (
+    AppSettings,
+    get_api_key,
+    get_free_api_key,
+    migrate_dotenv,
+    set_api_key,
+)
 
 AVAILABLE_VOICES = ("Puck", "Charon", "Aoede", "Fenrir", "Kore")
 DEFAULT_MODEL = "gemini-3.1-flash-live-preview"
@@ -154,6 +160,28 @@ def _guard_frozen_workspace(settings: AppSettings) -> AppSettings:
     )
 
 
+def _with_tier_keys(settings: AppSettings) -> AppSettings:
+    """Populate the dual-tier key fields from the environment/credential store.
+
+    The Supervisor builds its TierManager from ``api_key_tier1``/
+    ``api_key_free`` (falling back to secrets directly), so resolving both
+    keys here wires the fallback cascade for both the GUI and headless entry
+    points without changing their Supervisor construction.
+    """
+    updates: dict[str, str] = {}
+    if not settings.api_key_tier1:
+        tier1_key = get_api_key()
+        if tier1_key:
+            updates["api_key_tier1"] = tier1_key
+    if not settings.api_key_free:
+        free_key = get_free_api_key()
+        if free_key:
+            updates["api_key_free"] = free_key
+    if not updates:
+        return settings
+    return settings.model_copy(update=updates)
+
+
 def main() -> int:
     """Parse args, build settings, ensure an API key, and run the agent."""
     args = parse_args()
@@ -178,6 +206,7 @@ def main() -> int:
         debug=args.debug,
     )
     settings = _guard_frozen_workspace(settings)
+    settings = _with_tier_keys(settings)
 
     if settings.headless:
         return asyncio.run(run_headless(settings))

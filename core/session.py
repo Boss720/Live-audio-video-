@@ -40,6 +40,7 @@ from core.events import (
     ConnectionStateChanged,
     DisconnectReason,
     PartialTranscript,
+    RateLimitHit,
     SessionError,
     SessionExpiring,
     TranscriptSource,
@@ -59,6 +60,7 @@ from settings.secrets import get_api_key
 from settings.settings import AppSettings
 from tools import build_function_declarations
 from tools import computer as computer_tools
+from tools import registry as tool_registry
 from tools._state import set_policy_engine, set_workspace_root
 from tools.registry import COMPUTER_TOOL_NAMES, ToolResult
 
@@ -66,6 +68,144 @@ logger = get_logger(__name__)
 
 _MAX_VIDEO_SEND_ERRORS = 5
 _METER_INTERVAL_SECONDS = 0.033
+
+# Per-1M-token pricing (input USD, output USD) for the Live models, keyed by
+# model-name prefix. The session does not know which pricing tier it is
+# running on (the supervisor does), so it always computes the paid-tier
+# estimate; free-tier sessions should surface ``estimated_usd=None`` on the
+# ``UsageUpdate`` event so the GUI can show "Free" instead of a dollar figure.
+_COST_PER_MILLION_TOKENS: dict[str, tuple[float, float]] = {
+    "gemini-3.1-flash-live-preview": (0.15, 0.60),
+    "gemini-2.5-flash-native-audio": (0.15, 0.60),
+}
+_DEFAULT_COST_PER_MILLION_TOKENS = (0.15, 0.60)
+
+
+def _cost_rates_for_model(model: str) -> tuple[float, float]:
+    """Return the (input, output) per-1M-token USD rates for ``model``."""
+    for prefix, rates in _COST_PER_MILLION_TOKENS.items():
+        if model.startswith(prefix):
+            return rates
+    return _DEFAULT_COST_PER_MILLION_TOKENS
+
+
+# ---------------------------------------------------------------------------
+# Module 3: non-blocking tools & session-level API features
+# ---------------------------------------------------------------------------
+
+# ``tools.registry.FUNCTION_SCHEDULES`` value -> ``FunctionDeclaration``
+# behavior. The Live API has no session-level scheduling field on
+# ``LiveConnectConfig``; non-blocking scheduling is expressed per declaration
+# via ``behavior`` (BidiGenerateContent-only).
+_BEHAVIOR_BY_SCHEDULE: dict[str, types.Behavior] = {
+    "non_blocking_when_idle": types.Behavior.NON_BLOCKING,
+    "non_blocking_silent": types.Behavior.NON_BLOCKING,
+    "blocking_interrupt": types.Behavior.BLOCKING,
+}
+
+# How a tool *response* is scheduled back into the conversation. Only set for
+# NON_BLOCKING declarations; the API ignores ``scheduling`` on blocking calls.
+_RESPONSE_SCHEDULING_BY_SCHEDULE: dict[str, types.FunctionResponseScheduling] = {
+    "non_blocking_when_idle": types.FunctionResponseScheduling.WHEN_IDLE,
+    "non_blocking_silent": types.FunctionResponseScheduling.SILENT,
+}
+
+_MEDIA_RESOLUTION_BY_SETTING: dict[str, types.MediaResolution] = {
+    "low": types.MediaResolution.MEDIA_RESOLUTION_LOW,
+    "high": types.MediaResolution.MEDIA_RESOLUTION_HIGH,
+}
+
+_THINKING_LEVEL_BY_SETTING: dict[str, types.ThinkingLevel] = {
+    "minimal": types.ThinkingLevel.MINIMAL,
+    "medium": types.ThinkingLevel.MEDIUM,
+    "high": types.ThinkingLevel.HIGH,
+}
+
+
+def _supports_search_and_affective(model: str) -> bool:
+    """Whether the model accepts google_search and affective dialog.
+
+    Verified live against the API: ``gemini-3.1-flash-live-preview`` rejects
+    both at connect time (1011 quota/internal errors); the 2.5 native-audio
+    family accepts them.
+    """
+    return model.startswith("gemini-2.5-flash-native-audio")
+
+
+def _build_tools(settings: AppSettings) -> list[types.Tool]:
+    """Build the tool list, preferring the registry's consolidated builder.
+
+    ``build_tools`` (single consolidated ``Tool`` plus conditional
+    google_search / code_execution tools) supersedes the per-declaration
+    ``build_function_declarations`` entry point; fall back to the legacy path
+    when the registry does not expose it yet. google_search is dropped on
+    models that reject it (see ``_supports_search_and_affective``).
+    """
+    build_tools = getattr(tool_registry, "build_tools", None)
+    if build_tools is not None:
+        tools = list(build_tools(settings))
+    else:
+        tools = list(
+            build_function_declarations(computer_use=settings.computer_use_enabled)
+        )
+    if not _supports_search_and_affective(settings.model):
+        tools = [tool for tool in tools if tool.google_search is None]
+    return tools
+
+
+def _tool_schedules() -> dict[str, str]:
+    """Return the registry's ``FUNCTION_SCHEDULES`` (empty if unavailable)."""
+    schedules = getattr(tool_registry, "FUNCTION_SCHEDULES", None)
+    return dict(schedules) if schedules else {}
+
+
+def _apply_function_behavior(tools: list[types.Tool]) -> list[types.Tool]:
+    """Stamp each declaration with the ``Behavior`` its schedule implies."""
+    schedules = _tool_schedules()
+    if not schedules:
+        return tools
+    result: list[types.Tool] = []
+    for tool in tools:
+        declarations = tool.function_declarations
+        if not declarations:
+            result.append(tool)
+            continue
+        updated = [
+            declaration.model_copy(
+                update={"behavior": _BEHAVIOR_BY_SCHEDULE[schedules[declaration.name]]}
+            )
+            if declaration.name in schedules
+            and schedules[declaration.name] in _BEHAVIOR_BY_SCHEDULE
+            else declaration
+            for declaration in declarations
+        ]
+        result.append(tool.model_copy(update={"function_declarations": updated}))
+    return result
+
+
+def _response_scheduling_for(name: str) -> types.FunctionResponseScheduling | None:
+    """Scheduling to attach to a tool response, or ``None`` for blocking tools."""
+    schedule = _tool_schedules().get(name)
+    if schedule is None:
+        return None
+    return _RESPONSE_SCHEDULING_BY_SCHEDULE.get(schedule)
+
+
+def _session_config_fields(settings: AppSettings) -> dict[str, Any]:
+    """Module-3 ``LiveConnectConfig`` fields layered over ``as_connect_config``.
+
+    Note: ``safety_settings`` exists on the SDK's ``LiveConnectConfig`` but the
+    Live API backend rejects it (``Unknown name "safetySettings" at 'setup'``),
+    so it is deliberately not sent.
+    """
+    return {
+        "media_resolution": _MEDIA_RESOLUTION_BY_SETTING[settings.media_resolution],
+        "enable_affective_dialog": settings.enable_affective_dialog
+        and _supports_search_and_affective(settings.model),
+        "thinking_config": types.ThinkingConfig(
+            thinking_level=_THINKING_LEVEL_BY_SETTING[settings.thinking_level]
+        ),
+    }
 
 
 class LiveSession:
@@ -161,6 +301,14 @@ class LiveSession:
         self._session: Any | None = None
         self._latest_resumption_handle: str | None = None
         self._closed = False
+        self._rate_limit_emitted = False
+
+        # Whether audio has streamed since the last ``audio_stream_end``
+        # marker; used to send the marker exactly when it adds information.
+        self._audio_streamed = False
+        # Cumulative token counters for the session cost estimate.
+        self._prompt_tokens_used = 0
+        self._completion_tokens_used = 0
 
         self._video_send_task: asyncio.Task[Any] | None = None
         self._shutdown_event = asyncio.Event()
@@ -196,12 +344,11 @@ class LiveSession:
 
         client = genai.Client(api_key=api_key)
         connect_config = self._settings.as_connect_config(
-            tools=list(
-                build_function_declarations(
-                    computer_use=self._settings.computer_use_enabled
-                )
-            ),
+            tools=_apply_function_behavior(_build_tools(self._settings)),
             resumption_handle=self._resumption_handle,
+        )
+        connect_config = connect_config.model_copy(
+            update=_session_config_fields(self._settings)
         )
 
         await self._emit(ConnectionStateChanged(ConnectionState.CONNECTING))
@@ -225,6 +372,7 @@ class LiveSession:
         except Exception as exc:
             logger.exception("Session failed")
             reason = self._classify_disconnect(exc)
+            await self._maybe_emit_rate_limit(exc)
             await self._emit(
                 ConnectionStateChanged(
                     ConnectionState.ERROR,
@@ -342,6 +490,11 @@ class LiveSession:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
 
+            # Tell the API the audio stream ended before the WebSocket closes
+            # so VAD can finalize any in-flight utterance. Best-effort: the
+            # session may already be broken.
+            await self._send_audio_stream_end(session)
+
             # Flush any partial transcript that arrived just before close.
             for event in self._turn_state.flush():
                 await self._emit(event)
@@ -425,6 +578,17 @@ class LiveSession:
 
                     server_content = response.server_content
                     if server_content:
+                        # generation_complete ends the model's generation; with
+                        # realtime playback the API may delay turn_complete past
+                        # it, so treat a standalone generation_complete as the
+                        # same turn boundary (flush transcript, advance turn id).
+                        if server_content.generation_complete:
+                            logger.debug("generation_complete received")
+                            if not server_content.turn_complete:
+                                server_content = server_content.model_copy(
+                                    update={"turn_complete": True}
+                                )
+
                         # Wake-word gate: a voice turn that never addressed us
                         # must produce no audio, no transcript, no tool calls.
                         if self._update_wake_gate(server_content):
@@ -490,6 +654,14 @@ class LiveSession:
                     # Tool calls are handled off the receive path so approvals and
                     # blocking operations cannot stall message handling. A gated
                     # (unaddressed) turn must never dispatch tools.
+                    #
+                    # NON_BLOCKING declarations (Module 3) arrive through this
+                    # same ``tool_call`` message — the SDK has no separate
+                    # scheduled-call payload. Because every call is dispatched
+                    # as an independent task, non-blocking tools already run
+                    # without interrupting in-flight model audio; their
+                    # responses carry ``scheduling`` (WHEN_IDLE/SILENT) so the
+                    # server folds results in without hijacking the turn.
                     tool_call = response.tool_call
                     if tool_call and tool_call.function_calls and not self._turn_gated:
                         for fc in tool_call.function_calls:
@@ -529,19 +701,35 @@ class LiveSession:
                         video_tokens = _modality_tokens(
                             prompt_details, "VIDEO"
                         ) + _modality_tokens(response_details, "VIDEO")
+                        prompt_tokens = getattr(usage, "prompt_token_count", 0) or 0
+                        completion_tokens = (
+                            getattr(usage, "response_token_count", 0) or 0
+                        )
+                        # Cumulative session cost at paid-tier rates. The
+                        # session cannot tell free from paid tier (the
+                        # supervisor knows); the supervisor/GUI should null
+                        # ``estimated_usd`` for free-tier sessions so the GUI
+                        # shows "Free".
+                        self._prompt_tokens_used += prompt_tokens
+                        self._completion_tokens_used += completion_tokens
+                        input_rate, output_rate = _cost_rates_for_model(
+                            self._settings.model
+                        )
+                        estimated_usd = (
+                            self._prompt_tokens_used * input_rate
+                            + self._completion_tokens_used * output_rate
+                        ) / 1_000_000
                         usage_event = UsageUpdate(
-                            prompt_tokens=getattr(usage, "prompt_token_count", 0) or 0,
+                            prompt_tokens=prompt_tokens,
                             cached_tokens=getattr(
                                 usage, "cached_content_token_count", 0
                             )
                             or 0,
-                            completion_tokens=getattr(
-                                usage, "response_token_count", 0
-                            )
-                            or 0,
+                            completion_tokens=completion_tokens,
                             audio_tokens=audio_tokens,
                             video_tokens=video_tokens,
                             total_tokens=getattr(usage, "total_token_count", 0) or 0,
+                            estimated_usd=estimated_usd,
                         )
                         await self._emit(usage_event)
                         self._record_usage(usage_event)
@@ -551,6 +739,7 @@ class LiveSession:
         except Exception as exc:
             logger.exception("Receive loop failed")
             await self._emit(SessionError(message=str(exc), fatal=True))
+            await self._maybe_emit_rate_limit(exc)
             return self._classify_disconnect(exc)
 
         return API_CLOSE
@@ -582,9 +771,19 @@ class LiveSession:
                     self._text_turn_pending = True
 
                 elif isinstance(cmd, SetMicGate):
+                    was_open = self._mic_gate_open
                     self._mic_gate_open = cmd.open
                     if self._mic is not None:
                         self._mic.set_gate(cmd.open)
+                    if was_open and not cmd.open:
+                        # Muting ends the user's audio stream; tell the API
+                        # inline (not queued behind audio chunks) so VAD
+                        # finalizes the utterance within ~50ms of the mute.
+                        self._audio_streamed = False
+                        try:
+                            await session.send_realtime_input(audio_stream_end=True)
+                        except Exception as exc:
+                            logger.warning("audio_stream_end send failed: %s", exc)
 
                 elif isinstance(cmd, SetShareScreen):
                     if not cmd.enabled and self._settings.computer_use_enabled:
@@ -650,6 +849,7 @@ class LiveSession:
         except Exception as exc:
             logger.exception("Send loop failed")
             await self._emit(SessionError(message=str(exc), fatal=True))
+            await self._maybe_emit_rate_limit(exc)
             return self._classify_disconnect(exc)
 
     async def _audio_send_loop(self, session: Any, mic: Microphone) -> None:
@@ -667,6 +867,7 @@ class LiveSession:
                             mime_type=f"audio/pcm;rate={INPUT_SAMPLE_RATE}",
                         )
                     )
+                    self._audio_streamed = True
                 except Exception as exc:
                     logger.warning("Audio send failed: %s", exc)
                     await asyncio.sleep(0.1)
@@ -743,6 +944,7 @@ class LiveSession:
                         id=call_id,
                         name=name,
                         response={"result": result.message},
+                        scheduling=_response_scheduling_for(name),
                     )
                 ]
             )
@@ -796,6 +998,49 @@ class LiveSession:
 
         return DisconnectReason("transient", detail)
 
+    @staticmethod
+    def _is_rate_limit(exc: BaseException) -> bool:
+        """Return True if ``exc`` looks like a rate-limit (429) termination.
+
+        The Live API signals quota exhaustion two ways (see ``genai/live.py``):
+        an in-band error message, which the SDK raises as ``ClientError`` with
+        ``code == 429`` and ``status == "RESOURCE_EXHAUSTED"``, or a WebSocket
+        close whose reason string the SDK wraps in a plain ``APIError`` (close
+        codes are 1xxx, so no subclass), leaving only the message text to
+        match on.
+        """
+        if isinstance(exc, google.genai.errors.APIError):
+            if getattr(exc, "status", None) == "RESOURCE_EXHAUSTED":
+                return True
+            if getattr(exc, "code", None) == 429:
+                return True
+        lowered = str(exc).lower()
+        return (
+            "resource_exhausted" in lowered
+            or "429" in lowered
+            or "rate limit" in lowered
+            or "quota" in lowered
+        )
+
+    async def _maybe_emit_rate_limit(self, exc: BaseException) -> None:
+        """Emit ``RateLimitHit`` exactly once per session on a 429 failure.
+
+        The session does not know which tier it is running on or the tier's
+        TPM counters; the supervisor fills those in from its own tracking.
+        """
+        if self._rate_limit_emitted or not self._is_rate_limit(exc):
+            return
+        self._rate_limit_emitted = True
+        await self._emit(
+            RateLimitHit(
+                model=self._settings.model,
+                tier="",
+                tpm_used=0,
+                tpm_limit=0,
+                cooldown_seconds=0.0,
+            )
+        )
+
     def _parse_time_left(self, time_left: str | None) -> int | None:
         """Parse a duration string such as ``'60s'`` into seconds."""
         if time_left is None:
@@ -825,6 +1070,7 @@ class LiveSession:
                     id=call_id,
                     name=name,
                     response={"result": result.message},
+                    scheduling=_response_scheduling_for(name),
                 )
             ]
         )
@@ -835,6 +1081,8 @@ class LiveSession:
     def _record_usage(self, event: UsageUpdate) -> None:
         """Persist non-zero usage modalities as incremental history rows."""
         recorded_at = datetime.now(UTC).isoformat()
+        # The usage table is NOT NULL on usd; unknown (free tier) is 0.0.
+        usd = event.estimated_usd if event.estimated_usd is not None else 0.0
         modalities = {
             "prompt": event.prompt_tokens,
             "cached": event.cached_tokens,
@@ -845,8 +1093,22 @@ class LiveSession:
         for modality, tokens in modalities.items():
             if tokens:
                 self._store.record_usage(
-                    self._run_id, modality, tokens, event.estimated_usd, recorded_at
+                    self._run_id, modality, tokens, usd, recorded_at
                 )
+
+    async def _send_audio_stream_end(self, session: Any) -> None:
+        """Best-effort ``audio_stream_end`` marker so VAD finalizes promptly.
+
+        Only sent when audio has streamed since the last end marker; failures
+        are swallowed because the socket may already be broken.
+        """
+        if not self._audio_streamed:
+            return
+        self._audio_streamed = False
+        try:
+            await session.send_realtime_input(audio_stream_end=True)
+        except Exception as exc:
+            logger.warning("audio_stream_end send failed: %s", exc)
 
     async def _stop_media(self) -> None:
         """Stop microphone, speaker, and screen capture if the session owns them."""
