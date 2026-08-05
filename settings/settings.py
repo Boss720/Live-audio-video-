@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
 from pathlib import Path
@@ -10,8 +11,10 @@ from typing import Any
 
 from google.genai import types
 from platformdirs import user_config_dir
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 _AVAILABLE_VOICES = (
     "Puck",
@@ -171,8 +174,16 @@ class AppSettings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="GEMINI_",
+        # Still strict: a typo'd env var or override should fail loudly. Keys
+        # read from settings.json are filtered in ``load`` before they get here,
+        # because that file is shared with other installed builds.
         extra="forbid",
     )
+
+    # Settings-file keys this build does not know about — written by a newer
+    # build against the same settings.json. Held so ``save`` can put them back
+    # instead of destroying them; see ``load``.
+    _unknown_file_keys: dict[str, Any] = PrivateAttr(default_factory=dict)
 
     model: str = "gemini-3.1-flash-live-preview"
     # Verified against the Live API (bidiGenerateContent): the bare id
@@ -308,6 +319,11 @@ class AppSettings(BaseSettings):
         data = self.model_dump(
             exclude={"api_key", "api_key_tier1", "api_key_free", "headless", "debug"}
         )
+        # Put back the keys a newer build wrote that this one does not model.
+        # Without this, launching an older build once would silently strip the
+        # newer build's settings the next time anything was saved.
+        for key, value in self._unknown_file_keys.items():
+            data.setdefault(key, value)
         settings_file.write_text(
             json.dumps(data, indent=2, sort_keys=True, default=str),
             encoding="utf-8",
@@ -334,6 +350,22 @@ class AppSettings(BaseSettings):
                 raise ValueError(msg)
             file_values = raw
 
+        # Drop keys this build does not model rather than failing. settings.json
+        # is shared by every installed build, so a file written by a newer one
+        # must not stop an older one from starting — the model is still strict
+        # about env vars and overrides, which are typo-prone in a way this is
+        # not. The dropped keys are retained so ``save`` can write them back.
+        unknown = {k: v for k, v in file_values.items() if k not in cls.model_fields}
+        if unknown:
+            logger.warning(
+                "Ignoring %d unrecognised setting(s) in %s: %s. "
+                "They were probably written by a newer build and will be preserved.",
+                len(unknown),
+                settings_file,
+                ", ".join(sorted(unknown)),
+            )
+            file_values = {k: v for k, v in file_values.items() if k not in unknown}
+
         # Apply file values only when the corresponding env var is not set, so
         # env vars override the settings file. Init kwargs override everything.
         env_prefix = cls.model_config.get("env_prefix", "")
@@ -346,7 +378,9 @@ class AppSettings(BaseSettings):
                 effective[key] = value
 
         effective.update(overrides)
-        return cls(**effective)
+        settings = cls(**effective)
+        settings._unknown_file_keys = unknown
+        return settings
 
     def as_connect_config(
         self, tools: list[Any], *, resumption_handle: str | None = None
