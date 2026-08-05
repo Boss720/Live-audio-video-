@@ -221,3 +221,46 @@ async def test_approval_timeout(
     assert result_event.ok is False
     assert "approval_timeout" in result_event.result
     assert not target.exists()
+
+
+async def test_aclose_cancels_in_flight_tasks(dispatcher: ToolDispatcher) -> None:
+    """Shutdown cancels tracked tasks instead of leaving them pending.
+
+    Regression: tool calls were spawned with a bare ``asyncio.create_task`` and
+    never cancelled, so tearing down the loop printed "Task was destroyed but it
+    is pending!" and dropped the call.
+    """
+    started = asyncio.Event()
+
+    async def never_finishes() -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    task = dispatcher.spawn(never_finishes())
+    await started.wait()
+    assert not task.done()
+
+    await dispatcher.aclose()
+
+    assert task.cancelled()
+    assert dispatcher._tasks == set()
+
+
+async def test_spawn_keeps_a_strong_reference(dispatcher: ToolDispatcher) -> None:
+    """A spawned task is retained until it completes, then released.
+
+    asyncio holds only a weak reference to a running task, so an untracked one
+    can be garbage-collected mid-call.
+    """
+    release = asyncio.Event()
+
+    async def waits() -> None:
+        await release.wait()
+
+    task = dispatcher.spawn(waits())
+    assert task in dispatcher._tasks
+
+    release.set()
+    await task
+    # The done callback drops it, so the set does not grow without bound.
+    assert task not in dispatcher._tasks

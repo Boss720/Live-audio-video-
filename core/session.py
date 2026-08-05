@@ -666,7 +666,11 @@ class LiveSession:
                     if tool_call and tool_call.function_calls and not self._turn_gated:
                         for fc in tool_call.function_calls:
                             if self._dispatcher is not None:
-                                asyncio.create_task(
+                                # Tracked by the dispatcher, not by this
+                                # session: the call must outlive a dropped
+                                # socket so its result reaches whichever
+                                # session is connected when it finishes.
+                                self._dispatcher.spawn(
                                     self._dispatcher.submit(
                                         fc.id,
                                         fc.name,

@@ -121,6 +121,46 @@ class ToolDispatcher:
         # but no FunctionResponse is sent for these ids.
         self._cancelled_ids: set[str] = set()
 
+        # Every task this dispatcher spawns. Held for two reasons: asyncio keeps
+        # only a weak reference to a running task, so an untracked one can be
+        # garbage-collected mid-call; and ``aclose`` needs them to shut down
+        # without leaving "Task was destroyed but it is pending!" behind.
+        #
+        # These live on the dispatcher rather than on the session because a tool
+        # call deliberately outlives a dropped socket — the result is delivered
+        # to whichever session is connected when it finishes.
+        self._tasks: set[asyncio.Task[Any]] = set()
+
+    def spawn(self, coro: Awaitable[Any]) -> asyncio.Task[Any]:
+        """Run ``coro`` as a tracked background task.
+
+        Use this instead of a bare ``asyncio.create_task`` for anything the
+        dispatcher starts, so the task survives garbage collection and is
+        cancelled properly by ``aclose``.
+        """
+        task = asyncio.ensure_future(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+    async def aclose(self) -> None:
+        """Cancel and await every in-flight tool task.
+
+        Called once, at real shutdown — not on reconnect, where in-flight calls
+        are expected to keep running. Cancellation is best-effort: a tool that
+        swallows ``CancelledError`` is awaited to completion rather than
+        abandoned, which is what leaves a pending task at interpreter exit.
+        """
+        if not self._tasks:
+            return
+
+        # Copy first: the done callback mutates the set as tasks settle.
+        tasks = list(self._tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
+
     def set_respond_callback(self, callback: RespondCallback) -> None:
         """Set the callback used to send ``FunctionResponse`` objects upstream."""
         self._respond = callback
@@ -231,7 +271,7 @@ class ToolDispatcher:
         """
         for call_id in list(self._approval_events):
             self.deny(call_id, reason=reason)
-            asyncio.create_task(
+            self.spawn(
                 self._emit(
                     ToolCallCancelled(call_ids=[call_id], reason=reason)
                 )
@@ -253,9 +293,9 @@ class ToolDispatcher:
                 event.set()
 
             self._cancelled_ids.add(call_id)
-            asyncio.create_task(shell_tools.cancel_shell(call_id))
+            self.spawn(shell_tools.cancel_shell(call_id))
             # Emit once, even if the id was not known to the dispatcher.
-            asyncio.create_task(
+            self.spawn(
                 self._emit(
                     ToolCallCancelled(call_ids=[call_id], reason="cancelled_by_user")
                 )

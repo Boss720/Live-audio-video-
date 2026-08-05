@@ -303,6 +303,9 @@ class Supervisor:
                 self._epoch += 1
         finally:
             self._live_session = None
+            # Real shutdown, not a reconnect: this is the one place in-flight
+            # tool calls are cancelled rather than carried to the next session.
+            await self._dispatcher.aclose()
             secrets.set_active_api_key(None)
             self._store.end_run(self._run_id)
             await self._emit(ConnectionStateChanged(ConnectionState.DISCONNECTED))
