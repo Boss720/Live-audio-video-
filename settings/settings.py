@@ -53,6 +53,11 @@ _PRIVACY_MODES = ("strict", "relaxed", "auto")
 _MEDIA_RESOLUTIONS = ("low", "high")
 _THINKING_LEVELS = ("minimal", "medium", "high")
 _FRAME_MODES = ("on_demand", "stream")
+_TURN_COVERAGES: dict[str, types.TurnCoverage | None] = {
+    "default": None,
+    "only_activity": types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,
+    "all_input": types.TurnCoverage.TURN_INCLUDES_ALL_INPUT,
+}
 
 _SYSTEM_INSTRUCTION_TEMPLATE = """\
 You are a powerful AI assistant with direct access to the user's local computer. \
@@ -200,11 +205,16 @@ class AppSettings(BaseSettings):
     share_screen: bool = False
     screen_fps: float = 1.0
     screen_monitor: int = 1
-    # How screen frames reach the model. "on_demand" sends a frame after each
-    # computer-use action, on request, and on a slow heartbeat; "stream" is the
-    # old continuous ``screen_fps`` feed. Streaming at 1 fps grew the context by
-    # ~390 tokens/second, which is what made late turns slow.
-    frame_mode: str = "on_demand"  # on_demand, stream
+    # How screen frames reach the model. "stream" is the continuous
+    # ``screen_fps`` feed; "on_demand" sends a frame after each computer-use
+    # action, on request, and on a slow heartbeat.
+    #
+    # "stream" is the default because it is what the model can actually work
+    # with: at 1 fps a frame costs ~527 tokens (measured), so on-demand is far
+    # cheaper and lower-latency, but it gives the model materially less to look
+    # at, and computer-use accuracy is the thing worth protecting. Switch to
+    # "on_demand" deliberately, with turn_coverage left at "default".
+    frame_mode: str = "stream"  # on_demand, stream
     # Ambient frame cadence in on-demand mode: keeps the model roughly aware of
     # the screen between actions without billing a frame every second.
     frame_heartbeat_seconds: float = 8.0
@@ -234,10 +244,17 @@ class AppSettings(BaseSettings):
     # target_tokens_tier1 (the model's larger effective budget there).
     target_tokens: int = 24000
     target_tokens_tier1: int = 32000
-    # Context size that triggers sliding-window compression. Without it the
-    # window never fires and sessions were observed reaching 258k prompt tokens
-    # against a 24k target.
-    trigger_tokens: int = 32000
+    # Context size that triggers sliding-window compression. Unset by default:
+    # without it the window never fires and sessions were observed reaching 258k
+    # prompt tokens against a 24k target, but setting it makes compression
+    # truncate mid-task, which costs the model the earlier steps of whatever it
+    # is doing. Set it when a session's length matters more than its memory.
+    trigger_tokens: int | None = None
+    # How much of the input stream each turn covers. "default" leaves the field
+    # unset, which is what the API does today: audio activity plus all video.
+    # "only_activity" excludes input that arrived between turns — which is when
+    # post-action and heartbeat frames arrive, so it can blind computer use.
+    turn_coverage: str = "default"  # default, only_activity, all_input
     # "high" is the default: "low" measurably degraded computer-use sessions
     # (misread screens). Module 4 may make this tier-aware (low on Free).
     media_resolution: str = "high"  # low, high
@@ -275,6 +292,15 @@ class AppSettings(BaseSettings):
     def _validate_frame_mode(cls, value: str) -> str:
         if value not in _FRAME_MODES:
             msg = f"Invalid frame_mode '{value}'. Choose one of: {', '.join(_FRAME_MODES)}"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("turn_coverage")
+    @classmethod
+    def _validate_turn_coverage(cls, value: str) -> str:
+        if value not in _TURN_COVERAGES:
+            choices = ", ".join(_TURN_COVERAGES)
+            msg = f"Invalid turn_coverage '{value}'. Choose one of: {choices}"
             raise ValueError(msg)
         return value
 
@@ -455,10 +481,11 @@ class AppSettings(BaseSettings):
                     silence_duration_ms=self.vad_silence_duration_ms,
                 ),
                 activity_handling=types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
-                # Without this the model's default folds every video frame seen
-                # so far into every turn, so each turn re-bills the whole frame
-                # history. ONLY_ACTIVITY scopes a turn to what happened in it.
-                turn_coverage=types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,
+                # ONLY_ACTIVITY stops each turn re-billing the whole frame
+                # history, but it also drops input that arrived between turns —
+                # which is exactly when post-action frames arrive. Off unless
+                # asked for; see the ``turn_coverage`` setting.
+                turn_coverage=_TURN_COVERAGES[self.turn_coverage],
             ),
             output_audio_transcription=types.AudioTranscriptionConfig(),
             input_audio_transcription=types.AudioTranscriptionConfig(),

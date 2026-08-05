@@ -158,26 +158,56 @@ async def test_usage_update_reports_audio_and_video_tokens(
 # ---------------------------------------------------------------------------
 
 
-def test_connect_config_sets_compression_trigger_and_turn_coverage(
+def test_connect_config_defaults_leave_model_input_untouched(
     settings: AppSettings,
 ) -> None:
+    """Defaults must not change what the model sees.
+
+    ``only_activity`` drops input that arrived between turns — where every
+    post-action frame lives — and a compression trigger truncates a task's
+    earlier steps out from under it. Both are opt-in.
+    """
     config = settings.as_connect_config(tools=[])
 
     compression = config.context_window_compression
     assert compression is not None
-    assert compression.trigger_tokens == settings.trigger_tokens
+    assert compression.trigger_tokens is None
     assert compression.sliding_window is not None
     assert compression.sliding_window.target_tokens == settings.target_tokens
 
     realtime = config.realtime_input_config
     assert realtime is not None
-    assert realtime.turn_coverage == types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY
+    assert realtime.turn_coverage is None
+    assert settings.frame_mode == "stream"
+
+
+def test_connect_config_applies_opted_in_context_limits(
+    settings: AppSettings,
+) -> None:
+    settings.turn_coverage = "only_activity"
+    settings.trigger_tokens = 32000
+    config = settings.as_connect_config(tools=[])
+
+    assert config.context_window_compression is not None
+    assert config.context_window_compression.trigger_tokens == 32000
+    assert config.realtime_input_config is not None
+    assert (
+        config.realtime_input_config.turn_coverage
+        == types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY
+    )
 
 
 def test_frame_mode_rejects_unknown_value(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="Invalid frame_mode"):
         AppSettings(
             working_dir=tmp_path, workspace_root=tmp_path, frame_mode="continuous"
+        )
+
+
+def test_turn_coverage_rejects_unknown_value(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="Invalid turn_coverage"):
+        AppSettings(
+            working_dir=tmp_path, workspace_root=tmp_path, turn_coverage="everything"
         )
 
 
@@ -272,7 +302,8 @@ async def test_post_action_frame_ignores_the_interval_floor(
 async def test_on_demand_mode_starts_no_capture_thread(
     settings: AppSettings, tmp_path: Path, monkeypatch: Any
 ) -> None:
-    """The 1 fps capture thread is the thing being removed; assert it is gone."""
+    """The 1 fps capture thread is what on-demand mode exists to avoid."""
+    settings.frame_mode = "on_demand"
     live = FakeLive()
     _patch_common(monkeypatch, live)
 
