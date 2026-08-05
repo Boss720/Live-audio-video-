@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from collections.abc import Awaitable, Callable
 
 import google.genai as genai
 from google.genai import types
@@ -123,7 +124,10 @@ async def ask_reasoning(question: str, thinking: types.ThinkingLevel) -> tuple[s
     return (response.text or ""), time.perf_counter() - started
 
 
-async def run(label: str, asker, thinking: types.ThinkingLevel) -> None:
+Asker = Callable[[str, types.ThinkingLevel], Awaitable[tuple[str, float]]]
+
+
+async def run(label: str, asker: Asker, thinking: types.ThinkingLevel) -> None:
     print(f"-- {label}")
     hits = 0
     latencies: list[float] = []
