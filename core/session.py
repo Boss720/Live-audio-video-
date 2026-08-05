@@ -757,9 +757,14 @@ class LiveSession:
                         audio_tokens = _modality_tokens(
                             prompt_details, "AUDIO"
                         ) + _modality_tokens(response_details, "AUDIO")
-                        video_tokens = _modality_tokens(
-                            prompt_details, "VIDEO"
-                        ) + _modality_tokens(response_details, "VIDEO")
+                        # Screen frames go out as ``image/jpeg`` blobs, and the
+                        # API bills them back as IMAGE, not VIDEO — counting
+                        # only VIDEO reports zero for a screen-sharing session.
+                        video_tokens = sum(
+                            _modality_tokens(details, modality)
+                            for details in (prompt_details, response_details)
+                            for modality in ("VIDEO", "IMAGE")
+                        )
                         prompt_tokens = getattr(usage, "prompt_token_count", 0) or 0
                         completion_tokens = (
                             getattr(usage, "response_token_count", 0) or 0

@@ -437,7 +437,13 @@ class Supervisor:
             self._speaker = Speaker(device=self._settings.output_device)
             await self._speaker.start()
 
-        if self._settings.share_screen and self._screen is None:
+        # On-demand frame mode has no use for the continuous capture thread —
+        # the session grabs its own frames after actions and on a heartbeat.
+        if (
+            self._settings.share_screen
+            and self._settings.frame_mode == "stream"
+            and self._screen is None
+        ):
             self._screen = ScreenCapture(
                 fps=self._settings.screen_fps,
                 monitor=self._settings.screen_monitor,

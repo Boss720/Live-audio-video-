@@ -120,8 +120,12 @@ async def test_usage_update_reports_audio_and_video_tokens(
             response_token_count=200,
             total_token_count=1700,
             prompt_tokens_details=[
+                # Screen frames are billed as IMAGE, not VIDEO.
                 types.ModalityTokenCount(
-                    modality=types.MediaModality.VIDEO, token_count=900
+                    modality=types.MediaModality.IMAGE, token_count=700
+                ),
+                types.ModalityTokenCount(
+                    modality=types.MediaModality.VIDEO, token_count=200
                 ),
                 types.ModalityTokenCount(
                     modality=types.MediaModality.AUDIO, token_count=400
