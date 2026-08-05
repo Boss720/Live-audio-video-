@@ -32,6 +32,10 @@ if TYPE_CHECKING:
 NORMALIZED_MAX = 1000
 _TYPE_INTERVAL_SECONDS = 0.02
 _DRAG_DURATION_SECONDS = 0.5
+# pyautogui sleeps PAUSE seconds after every call (default 0.1), which taxes
+# each computer-use action; keep a small margin instead so multi-step tasks
+# do not accumulate seconds of dead time.
+_ACTION_PAUSE_SECONDS = 0.02
 
 # Monitor that normalized coordinates are mapped onto. Mirrors the
 # ``screen_monitor`` setting; the session calls ``set_monitor`` at connect.
@@ -71,10 +75,11 @@ def set_monitor(index: int) -> None:
 
 
 def _pyautogui() -> Any:
-    """Import pyautogui lazily and keep the corner failsafe enabled."""
+    """Import pyautogui lazily, keep the corner failsafe on, cap its pause."""
     import pyautogui
 
     pyautogui.FAILSAFE = True
+    pyautogui.PAUSE = _ACTION_PAUSE_SECONDS
     return pyautogui
 
 

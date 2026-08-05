@@ -1065,7 +1065,13 @@ class LiveSession:
         )
 
     async def send_tool_response(self, call_id: str, name: str, result: ToolResult) -> None:
-        """Send a tool response to the active API session."""
+        """Send a tool response to the active API session.
+
+        Computer-use calls also push a fresh screenshot so the model sees the
+        result of its action; this is the path the supervisor's respond
+        callback funnels through, so the push must live here rather than only
+        in ``_make_respond_callback``.
+        """
         if self._session is None:
             raise RuntimeError("not connected")
         await self._session.send_tool_response(
@@ -1078,6 +1084,8 @@ class LiveSession:
                 )
             ]
         )
+        if name in COMPUTER_TOOL_NAMES:
+            await self._push_fresh_frame(self._session)
 
     async def _emit(self, event: Any) -> None:
         await self._event_queue.put(event)
