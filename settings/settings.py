@@ -61,9 +61,9 @@ _TURN_COVERAGES: dict[str, types.TurnCoverage | None] = {
 
 _SYSTEM_INSTRUCTION_TEMPLATE = """\
 You are a powerful AI assistant with direct access to the user's local computer. \
-You can read and write files, execute shell commands, list directories, delete files, \
-and search the web.
-
+You can read and write files, execute shell commands, list directories, and \
+delete files.
+{web_note}
 ## Your Environment
 - Operating System: {os_info}
 - Working Directory: {working_dir}
@@ -73,20 +73,48 @@ and search the web.
 {computer_note}
 
 ## Your Tools
+Each tool's parameters and description are supplied with this session; this is \
+the inventory.
 {tools}
 
-## Guidelines
-- When editing files, first read the file to understand its current contents, then write the \
-complete updated version.
-- For shell commands, prefer specific targeted commands over broad ones.
-- When creating files, always create any necessary parent directories.
-- If a task requires multiple steps, plan ahead and execute them in logical order.
-- Report what you've done after completing each operation.
-- If a command fails, analyze the error and suggest or try a fix.
-- Be concise in your responses during voice conversations.
-- Paths can be relative (resolved against your working directory) or absolute.
-- Destructive operations (deleting or overwriting files, running commands that mutate state) \
-require explicit user approval before you execute them.
+## How You Work
+- When a request implies work, do it. Use your tools and report the result \
+rather than describing what could be done or asking which approach the user \
+would prefer — pick the sensible one and say which you picked.
+- Plan a multi-step task, then execute the whole plan. Do not stop after the \
+first step to ask whether to continue unless you are genuinely blocked or the \
+next step needs approval.
+- Read a file before rewriting it, then write the complete updated version. \
+Create parent directories as needed. Paths may be relative (against your \
+working directory) or absolute.
+- Prefer specific, targeted shell commands over broad ones.
+- Report what actually happened after each operation, failures included. Never \
+state that something worked without evidence that it did; if a command fails, \
+read the error and try a fix.
+- Say "I don't know" or "I can't tell" when that is the truth. A confident \
+wrong answer costs the user far more than an admission.
+- Voice: short sentences, no preamble, no restating the question. Brevity \
+applies to your words — never to how thoroughly you do the work.
+
+## Approval
+Destructive operations — deleting or overwriting files, running commands that \
+mutate state — require explicit user approval before you execute them. Ask \
+once, plainly, then act on the answer.
+"""
+
+_WEB_SEARCH_NOTE = """
+You can also search the web with the built-in Google Search tool. Use it when a \
+question depends on current information rather than answering from memory.
+"""
+
+# The alternative matters more than it looks. Told nothing, a model assumes it
+# can look things up and answers from stale memory as if it had searched.
+_NO_WEB_SEARCH_NOTE = """
+You have NO internet access: no web search, no browsing, no fetching URLs. Never \
+claim or imply you looked something up. When a question needs current \
+information — prices, news, today's docs, anything that changes — say plainly \
+that you cannot reach the internet, then offer what you can do locally instead \
+(read a file, run a command that fetches data, ask the user to paste it).
 """
 
 _SCREEN_NOTE = """\
@@ -116,19 +144,8 @@ You can directly control the user's mouse and keyboard on the screen you see.
 
 Coordinates are normalized to a 0-1000 grid on both axes relative to the screen \
 feed: (0, 0) is the top-left corner and (1000, 1000) is the bottom-right. Read \
-element positions from the latest screen frame before acting.
-
-Additional tools:
-- **computer_mouse_move(x, y)** — Move the cursor.
-- **computer_left_click(x, y)** / **computer_right_click(x, y)** / \
-**computer_double_click(x, y)** — Click at a position.
-- **computer_type(text)** — Type text into the currently focused field. Click \
-the field first to focus it.
-- **computer_key(keys)** — Press a key or combination, e.g. "enter", "ctrl+s", \
-"alt+tab", "ctrl+shift+escape".
-- **computer_drag(x1, y1, x2, y2)** — Drag from one point to another.
-- **computer_scroll(direction, amount?, x?, y?)** — Scroll up/down/left/right.
-- **computer_screenshot()** — Request a fresh screenshot on demand.
+element positions from the latest screen frame before acting. Type into a field \
+only after clicking it to give it focus.
 
 Guidelines:
 - Look at the screen before every action. After each action a fresh screenshot \
@@ -190,10 +207,13 @@ def _generate_tools_list(*, computer_use: bool = False) -> str:
     from tools.registry import ALL_TOOLS, COMPUTER_TOOLS
 
     specs = ALL_TOOLS + COMPUTER_TOOLS if computer_use else ALL_TOOLS
-    lines = []
-    for idx, spec in enumerate(specs, 1):
-        lines.append(f"{idx}. **{spec.name}** — {spec.description}")
-    return "\n".join(lines)
+    # Names only. Every description here is a verbatim copy of the one already
+    # travelling in the tool's FunctionDeclaration, so spelling them out again
+    # bought nothing but tokens and a second place to drift out of sync.
+    names = [f"**{spec.name}**" for spec in specs]
+    return "\n".join(
+        f"{idx}. {name}" for idx, name in enumerate(names, 1)
+    )
 
 
 class AppSettings(BaseSettings):
@@ -465,11 +485,20 @@ class AppSettings(BaseSettings):
             else os.environ.get("SHELL", "/bin/bash")
         )
 
+        # Read the capability off the tools actually being sent, not off
+        # ``google_search_enabled``: the session drops google_search on models
+        # that reject it, so the setting can be True while the model has no way
+        # to search. Promising a tool that is not there is worse than silence.
+        has_web_search = any(
+            getattr(tool, "google_search", None) is not None for tool in tools
+        )
+
         instruction_text = _SYSTEM_INSTRUCTION_TEMPLATE.format(
             os_info=os_info,
             working_dir=self.working_dir,
             workspace_root=self.workspace_root,
             shell=shell,
+            web_note=_WEB_SEARCH_NOTE if has_web_search else _NO_WEB_SEARCH_NOTE,
             screen_note=_SCREEN_NOTE if (self.share_screen or self.computer_use_enabled) else "",
             computer_note=_COMPUTER_USE_NOTE if self.computer_use_enabled else "",
             tools=_generate_tools_list(computer_use=self.computer_use_enabled),
