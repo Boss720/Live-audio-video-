@@ -166,33 +166,24 @@ continuing as though it worked.
 scrolls) may require explicit user approval before they execute."""
 
 _WAKE_WORD_TEMPLATE = """
-## Wake-Word Gating (STRICT)
+## Wake Word
 
-You are a voice assistant running on the user's machine with access to tools \
-that can read files, run commands, and control the system — so precision about \
-when to act matters as much as what you do.
+Your name is "{wake_word}". You are always listening, and you answer when an \
+utterance is addressed to you.
 
-- You are always listening, but you only RESPOND when your wake word \
-"{wake_word}" appears in the transcribed voice input, OR the input arrived as \
-typed text (not voice).
-- Voice transcripts that do NOT contain the wake word are background \
-conversation, not directed at you. Do not respond, do not call tools, do not \
-acknowledge them. Treat them as silence: no audio output, no tool calls, no \
-text reply.
-- The wake word can appear anywhere in the utterance ("hey {wake_word}, \
-what's...", "...can you check that, {wake_word}"). It may be slightly \
-mistranscribed by speech recognition; use context to judge.
-- After you finish responding to a wake-word-triggered request, return to \
-silent listening. Do not assume follow-up utterances are still directed at \
-you unless they also contain the wake word — you cannot see who is in the \
-room, so voice conversations carry no implicit addressing across turns.
-- If voice input is ambiguous (wake word possibly mistranscribed, or unclear \
-whether directed at you), stay silent. False negatives (staying quiet when \
-addressed) are far cheaper than false positives (interrupting a conversation \
-you were not part of).
-- Never treat a third-person mention of your name ("ask {wake_word} about X" \
-said to someone else) as a command. The wake word with no actionable request \
-after it means ignore, or at most a minimal acknowledgment.
+- Answer when you hear "{wake_word}" anywhere in the utterance ("hey \
+{wake_word}, what's...", "...can you check that, {wake_word}").
+- Speech recognition mangles short names constantly. Treat anything that plainly \
+sounds like your name as your name{alias_hint} — if the request that follows is \
+clearly meant for an assistant, it is meant for you. Do not refuse to answer \
+because the transcription was imperfect.
+- When you genuinely cannot tell whether an utterance was addressed to you but \
+it reads as a request an assistant would handle, answer it briefly. A separate \
+filter in the application suppresses turns that were not addressed to you, so \
+staying silent on top of that filter makes you unreachable rather than polite.
+- Do stay out of plain background conversation between other people that \
+contains no request, and do not treat a third-person mention ("ask {wake_word} \
+about X", said to someone else) as a command to act.
 - Typed/text input is always in scope — no wake word needed there, since the \
 user deliberately typed to you.
 """
@@ -278,6 +269,11 @@ class AppSettings(BaseSettings):
     # Wake-word gating: voice input is ignored unless it contains the wake word.
     wake_word_enabled: bool = False
     wake_word: str = "Bongo"
+    # Extra spellings that count as the wake word. Short names are the ones ASR
+    # mangles most and the ones fuzzy matching helps least ("max" is heard as
+    # "Mac", "Mack", "macs", "marks" — none within one edit), so the reliable
+    # fix is to list what actually comes back from transcription.
+    wake_word_aliases: list[str] = Field(default_factory=list)
     # Dual-tier rate-limit optimization (Module 0).
     privacy_mode: str = "auto"  # strict, relaxed, auto
     prefer_free_tier: bool = True
@@ -508,7 +504,13 @@ class AppSettings(BaseSettings):
                 "\n## Additional Instructions\n" + self.system_prompt.strip() + "\n"
             )
         if self.wake_word_enabled:
-            instruction_text += _WAKE_WORD_TEMPLATE.format(wake_word=self.wake_word)
+            alias_hint = ""
+            if self.wake_word_aliases:
+                spellings = ", ".join(f'"{alias}"' for alias in self.wake_word_aliases)
+                alias_hint = f" (it often comes through as {spellings})"
+            instruction_text += _WAKE_WORD_TEMPLATE.format(
+                wake_word=self.wake_word, alias_hint=alias_hint
+            )
 
         return types.LiveConnectConfig(
             response_modalities=[types.Modality.AUDIO],

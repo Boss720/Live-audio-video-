@@ -11,6 +11,7 @@ the utterance is actually directed at the agent.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
@@ -39,25 +40,17 @@ def _levenshtein(a: str, b: str) -> int:
     return previous[-1]
 
 
-def contains_wake_word(text: str, wake_word: str) -> bool:
-    """Return True if ``text`` appears to contain ``wake_word``.
-
-    Matching rules, in order:
-    1. Normalized substring — handles "hey bongo", "thanks, Bongo!", and
-       multi-word wake phrases.
-    2. Per-token fuzzy match — a single-token wake word matches any transcript
-       token within edit distance 1 (ASR near-misses like "bonggo" or "bingo").
-       Fuzzy matching is disabled for wake words shorter than 4 characters,
-       where one edit changes the word too easily.
-    """
-    normalized_text = _normalize(text)
-    normalized_wake = _normalize(wake_word)
+def _matches_one(normalized_text: str, normalized_wake: str) -> bool:
+    """Match a single already-normalized wake term against a transcript."""
     if not normalized_text or not normalized_wake:
         return False
 
     if normalized_wake in normalized_text:
         return True
 
+    # Fuzzy matching needs enough letters that one edit does not turn the word
+    # into a different one. At three characters ("max" -> "map", "tax") it
+    # already does, so short wake words rely on exact matching plus aliases.
     if " " in normalized_wake or len(normalized_wake) < 4:
         return False
 
@@ -67,3 +60,32 @@ def contains_wake_word(text: str, wake_word: str) -> bool:
         # Skip tokens whose length differs by more than the allowed distance.
         if abs(len(token) - len(normalized_wake)) <= 1
     )
+
+
+def contains_wake_word(
+    text: str, wake_word: str, aliases: Sequence[str] = ()
+) -> bool:
+    """Return True if ``text`` appears to contain ``wake_word`` or an alias.
+
+    Matching rules, in order:
+    1. Normalized substring — handles "hey bongo", "thanks, Bongo!", and
+       multi-word wake phrases.
+    2. Per-token fuzzy match — a single-token wake word matches any transcript
+       token within edit distance 1 (ASR near-misses like "bonggo" or "bingo").
+       Fuzzy matching is disabled for wake words shorter than 4 characters,
+       where one edit changes the word too easily.
+    3. The same two rules against each alias.
+
+    Aliases exist because short wake words are the ones ASR mangles most and
+    the ones fuzzy matching can help least. "max" is heard as "Mac", "Mack",
+    "macs", "marks"; none of those is within one edit, and widening the
+    threshold far enough to catch them would also catch "map" and "tax".
+    Listing the spellings that actually occur is both safer and more effective
+    than guessing at them.
+    """
+    normalized_text = _normalize(text)
+    if not normalized_text:
+        return False
+
+    terms = [wake_word, *aliases]
+    return any(_matches_one(normalized_text, _normalize(term)) for term in terms)

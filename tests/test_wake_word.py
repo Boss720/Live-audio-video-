@@ -101,14 +101,14 @@ def _instruction_text(settings: AppSettings) -> str:
 
 def test_wake_word_prompt_block_absent_by_default(tmp_path: Path) -> None:
     text = _instruction_text(_make_settings(tmp_path))
-    assert "Wake-Word Gating" not in text
+    assert "## Wake Word" not in text
 
 
 def test_wake_word_prompt_block_appended_when_enabled(tmp_path: Path) -> None:
     text = _instruction_text(
         _make_settings(tmp_path, wake_word_enabled=True, wake_word="Zephyr")
     )
-    assert "Wake-Word Gating (STRICT)" in text
+    assert "## Wake Word" in text
     assert '"Zephyr"' in text
     assert "background" in text
     # Built-in tool knowledge stays intact.
@@ -451,3 +451,44 @@ def test_gui_wake_word_round_trips_into_built_settings(
     built = window._build_settings()
     assert built.wake_word_enabled is True
     assert built.wake_word == "Zephyr"
+
+
+# ----------------------------------------------------------------------
+# Aliases: short wake words that ASR mangles
+# ----------------------------------------------------------------------
+
+_MAX_ALIASES = ["Mac", "Mack", "macs", "marks", "mags"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "max, open the terminal",  # exact
+        "hey Mac can you open the terminal",  # ASR: hard c
+        "Mack, what's on my screen",  # ASR: doubled consonant
+        "hey macs open the file",  # ASR: trailing sibilant
+        "marks, run the tests",  # ASR: intrusive r
+        "mags what time is it",  # ASR: voiced ending
+    ],
+)
+def test_short_wake_word_matches_its_aliases(text: str) -> None:
+    """The whole point of aliases: none of these is within one edit of 'max'."""
+    assert contains_wake_word(text, "max", _MAX_ALIASES)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "did you see the game last night",
+        "put it on the map for me",  # one edit from 'max', must not trigger
+        "the tax return is due",  # one edit from 'max', must not trigger
+    ],
+)
+def test_short_wake_word_still_rejects_unaddressed_speech(text: str) -> None:
+    assert not contains_wake_word(text, "max", _MAX_ALIASES)
+
+
+def test_aliases_are_optional() -> None:
+    """Existing callers that pass no aliases keep the old behaviour."""
+    assert contains_wake_word("hey bongo", "Bongo")
+    assert not contains_wake_word("hey mac", "max")

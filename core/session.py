@@ -564,7 +564,21 @@ class LiveSession:
         if has_model_output and not self._turn_evaluated:
             self._turn_evaluated = True
             addressed = self._text_turn_pending or contains_wake_word(
-                self._utterance_text, self._settings.wake_word
+                self._utterance_text,
+                self._settings.wake_word,
+                self._settings.wake_word_aliases,
+            )
+            # Log the transcript either way. A gated turn produces no audio and
+            # no transcript bubble, so without this line "the agent ignored me"
+            # is indistinguishable from "the agent never heard me", and the one
+            # piece of evidence that separates them — what ASR actually
+            # returned — is discarded.
+            logger.info(
+                "[WAKE] %s wake=%r aliases=%r heard=%r",
+                "ADDRESSED" if addressed else "GATED (no response sent)",
+                self._settings.wake_word,
+                self._settings.wake_word_aliases,
+                self._utterance_text.strip()[:200],
             )
             if not addressed:
                 self._turn_gated = True
