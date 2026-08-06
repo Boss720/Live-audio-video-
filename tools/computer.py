@@ -13,6 +13,8 @@ synthesizing input.
 
 from __future__ import annotations
 
+import os
+import sys
 from typing import TYPE_CHECKING, Any
 
 from media import screen
@@ -93,6 +95,54 @@ def _to_physical(x: int, y: int) -> tuple[int, int]:
     return px, py
 
 
+def _own_window_is_foreground() -> bool:
+    """True when the agent's own window currently has focus (Windows only).
+
+    Elsewhere this returns False: there is no portable way to ask, and a guard
+    that cannot answer must not block the tools.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return False
+        pid = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return int(pid.value) == os.getpid()
+    except Exception:  # pragma: no cover - defensive, never block on this
+        return False
+
+
+def _self_input_guard() -> ToolResult | None:
+    """Refuse to synthesize input while the agent's own window has focus.
+
+    An app it meant to launch never came forward, so the keystrokes landed in
+    this GUI instead. One of them was a space, the focused widget was the
+    Disconnect button, and the session ended mid-word — reported as a random
+    disconnect, with no error anywhere because it was a perfectly ordinary
+    button press.
+
+    Typing into its own controls is never the intent, and the failure is
+    invisible from the model's side, so it is refused with an explanation it
+    can act on rather than silently obeyed.
+    """
+    if not _own_window_is_foreground():
+        return None
+    return ToolResult(
+        False,
+        "Refused: the agent's own window is in the foreground, so this input "
+        "would go into the agent's controls instead of the app you are aiming "
+        "at. The application you expected probably did not come to the front. "
+        "Take a screenshot, click the target window (or its taskbar button) to "
+        "focus it, confirm from the screenshot that it is frontmost, then "
+        "retry.",
+    )
+
+
 def _failsafe_result(exc: BaseException) -> ToolResult:
     return ToolResult(
         False,
@@ -112,6 +162,9 @@ def mouse_move(args: ComputerMouseMoveArgs, *, call_id: str = "") -> ToolResult:
 
 
 def _click(args: ComputerClickArgs, button: str, clicks: int, label: str) -> ToolResult:
+    refusal = _self_input_guard()
+    if refusal is not None:
+        return refusal
     gui = _pyautogui()
     px, py = _to_physical(args.x, args.y)
     try:
@@ -142,6 +195,9 @@ def type_text(args: ComputerTypeArgs, *, call_id: str = "") -> ToolResult:
     ASCII goes through ``typewrite``; anything else is pasted via the
     clipboard because ``typewrite`` cannot synthesize non-ASCII characters.
     """
+    refusal = _self_input_guard()
+    if refusal is not None:
+        return refusal
     gui = _pyautogui()
     try:
         if args.text.isascii():
@@ -168,6 +224,9 @@ def _normalize_key(part: str, gui: Any) -> str | None:
 
 def key_press(args: ComputerKeyArgs, *, call_id: str = "") -> ToolResult:
     """Press a key or combination like ``enter`` or ``ctrl+s``."""
+    refusal = _self_input_guard()
+    if refusal is not None:
+        return refusal
     gui = _pyautogui()
     parts = [p for p in args.keys.split("+") if p.strip()]
     keys: list[str] = []
@@ -190,6 +249,9 @@ def key_press(args: ComputerKeyArgs, *, call_id: str = "") -> ToolResult:
 
 def drag(args: ComputerDragArgs, *, call_id: str = "") -> ToolResult:
     """Drag with the left button from one normalized point to another."""
+    refusal = _self_input_guard()
+    if refusal is not None:
+        return refusal
     gui = _pyautogui()
     px1, py1 = _to_physical(args.x1, args.y1)
     px2, py2 = _to_physical(args.x2, args.y2)
@@ -203,6 +265,9 @@ def drag(args: ComputerDragArgs, *, call_id: str = "") -> ToolResult:
 
 def scroll(args: ComputerScrollArgs, *, call_id: str = "") -> ToolResult:
     """Scroll the mouse wheel, optionally at a normalized position."""
+    refusal = _self_input_guard()
+    if refusal is not None:
+        return refusal
     gui = _pyautogui()
     direction = args.direction.strip().lower()
     if direction not in _SCROLL_DIRECTIONS:

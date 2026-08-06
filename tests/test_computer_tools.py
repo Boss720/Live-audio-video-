@@ -26,6 +26,7 @@ from tools.registry import (
     COMPUTER_TOOL_NAMES,
     COMPUTER_TOOLS,
     ComputerClickArgs,
+    ComputerDragArgs,
     ComputerKeyArgs,
     ComputerMouseMoveArgs,
     ComputerScrollArgs,
@@ -495,3 +496,58 @@ async def test_dispatcher_rejects_out_of_range_coordinates(
     assert result_event.ok is False
     assert "Invalid arguments" in result_event.result
     assert fake_gui.calls == []
+
+
+# ----------------------------------------------------------------------
+# Self-input guard
+# ----------------------------------------------------------------------
+
+
+def test_input_tools_refuse_when_own_window_is_focused(monkeypatch: Any) -> None:
+    """Typing into our own GUI once ended a session mid-word.
+
+    An app the agent launched never came to the front, the keystrokes landed in
+    the agent's window, and the space in the text activated the focused
+    Disconnect button. Every input tool must refuse instead.
+    """
+    monkeypatch.setattr(computer, "_own_window_is_foreground", lambda: True)
+
+    calls: list[tuple[str, ToolResult]] = [
+        ("left_click", computer.left_click(ComputerClickArgs(x=500, y=500))),
+        ("right_click", computer.right_click(ComputerClickArgs(x=500, y=500))),
+        ("double_click", computer.double_click(ComputerClickArgs(x=1, y=1))),
+        ("type_text", computer.type_text(ComputerTypeArgs(text="I Am the Walrus"))),
+        ("key_press", computer.key_press(ComputerKeyArgs(keys="enter"))),
+        ("drag", computer.drag(ComputerDragArgs(x1=0, y1=0, x2=9, y2=9))),
+        ("scroll", computer.scroll(ComputerScrollArgs(direction="down", amount=3, x=None, y=None))),
+    ]
+    for name, result in calls:
+        assert result.ok is False, f"{name} should have refused"
+        assert "own window is in the foreground" in result.message, name
+        # The refusal has to tell the model how to recover, not just say no.
+        assert "focus" in result.message.lower(), name
+
+
+def test_input_tools_proceed_when_another_app_is_focused(monkeypatch: Any) -> None:
+    """The guard must not block ordinary computer use."""
+    monkeypatch.setattr(computer, "_own_window_is_foreground", lambda: False)
+    typed: list[str] = []
+
+    class _FakeGui:
+        FailSafeException = RuntimeError
+        KEYBOARD_KEYS = ["enter"]
+
+        def typewrite(self, text: str, interval: float = 0.0) -> None:
+            typed.append(text)
+
+    monkeypatch.setattr(computer, "_pyautogui", lambda: _FakeGui())
+
+    result = computer.type_text(ComputerTypeArgs(text="hello"))
+    assert result.ok is True
+    assert typed == ["hello"]
+
+
+def test_guard_is_inert_off_windows(monkeypatch: Any) -> None:
+    """No portable way to ask, so the guard must not block on other platforms."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert computer._own_window_is_foreground() is False

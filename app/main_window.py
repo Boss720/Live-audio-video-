@@ -191,6 +191,14 @@ class MainWindow(QMainWindow):
         self._mic_chip.setAccessibleName("Microphone state")
         self._connect_btn = QPushButton("Connect")
         self._connect_btn.setObjectName("accentButton")
+        # Never keyboard-focusable. A focused QPushButton fires on Space, and
+        # when computer use types into this window instead of the app it was
+        # aiming at — which happens whenever the target fails to come to the
+        # front — the first space in the text ends the session. Losing a
+        # session to a keystroke that was meant for a search box is not a
+        # trade worth the tab-order convenience; the button is one click away
+        # and computer use now refuses to type into its own window at all.
+        self._connect_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._connect_btn.clicked.connect(self._on_connect_clicked)
         top_layout.addWidget(self._status_label)
         top_layout.addWidget(self._mic_chip)
