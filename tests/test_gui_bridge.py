@@ -34,6 +34,9 @@ def settings(workspace: Path) -> AppSettings:
         mode="text",
         working_dir=workspace,
         workspace_root=workspace,
+        wake_word_enabled=False,
+        computer_use_enabled=False,
+        yolo=False,
         share_screen=False,
     )
 

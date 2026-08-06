@@ -107,14 +107,25 @@ You can also search the web with the built-in Google Search tool. Use it when a 
 question depends on current information rather than answering from memory.
 """
 
-# The alternative matters more than it looks. Told nothing, a model assumes it
-# can look things up and answers from stale memory as if it had searched.
+# Two failure modes to avoid, in both directions. Told nothing, a model assumes
+# it has a search tool and answers from stale memory as though it had looked
+# things up. Told flatly that it has "no internet access", it refuses to drive
+# the browser that is sitting on the user's screen — which it can absolutely do.
 _NO_WEB_SEARCH_NOTE = """
-You have NO internet access: no web search, no browsing, no fetching URLs. Never \
-claim or imply you looked something up. When a question needs current \
-information — prices, news, today's docs, anything that changes — say plainly \
-that you cannot reach the internet, then offer what you can do locally instead \
-(read a file, run a command that fetches data, ask the user to paste it).
+You have no built-in web-search tool: you cannot call a search API directly, and \
+you must never claim or imply you looked something up when you did not.
+
+You can still reach the internet — the same way a person at this desk would:
+- Drive the browser that is on screen with your computer-control tools: focus \
+the window, open a tab, type the query or URL, press enter, then read the \
+result off the next screenshot.
+- Run a command that fetches data (for example `curl` or `Invoke-WebRequest`) \
+and read its output.
+
+So never tell the user you "cannot access the internet" or "cannot browse". \
+The accurate statement is that you have no search tool, followed by doing it \
+through the browser or the shell. Only report a genuine failure after an \
+attempt actually fails — and say what failed.
 """
 
 _SCREEN_NOTE = """\
@@ -234,7 +245,7 @@ class AppSettings(BaseSettings):
     api_key: str | None = None  # legacy env override; fallback for api_key_tier1
     api_key_tier1: str | None = None  # Tier 1 (paid) API key
     api_key_free: str | None = None  # Free tier API key
-    share_screen: bool = False
+    share_screen: bool = True
     screen_fps: float = 1.0
     screen_monitor: int = 1
     # How screen frames reach the model. "stream" is the continuous
@@ -257,23 +268,27 @@ class AppSettings(BaseSettings):
     half_duplex: bool = True
     vad_prefix_padding_ms: int = 30
     vad_silence_duration_ms: int = 500
-    yolo: bool = False
+    # Skips the confirmation prompt for destructive tools (write_file,
+    # delete_file, run_command); path and secret policy still applies.
+    yolo: bool = True
     headless: bool = True
     debug: bool = False
     minimize_to_tray: bool = True
     # Mouse/keyboard control tools. Implies screen sharing: the model cannot
     # aim clicks at a screen it cannot see.
-    computer_use_enabled: bool = False
+    computer_use_enabled: bool = True
     # Extra instructions appended to the built-in system prompt. Empty = default.
     system_prompt: str = ""
     # Wake-word gating: voice input is ignored unless it contains the wake word.
-    wake_word_enabled: bool = False
-    wake_word: str = "Bongo"
+    wake_word_enabled: bool = True
+    wake_word: str = "Leroy"
     # Extra spellings that count as the wake word. Short names are the ones ASR
     # mangles most and the ones fuzzy matching helps least ("max" is heard as
     # "Mac", "Mack", "macs", "marks" — none within one edit), so the reliable
     # fix is to list what actually comes back from transcription.
-    wake_word_aliases: list[str] = Field(default_factory=list)
+    wake_word_aliases: list[str] = Field(
+        default_factory=lambda: ["lee roy", "le roy", "leeroy", "la roy", "lero"]
+    )
     # Dual-tier rate-limit optimization (Module 0).
     privacy_mode: str = "auto"  # strict, relaxed, auto
     prefer_free_tier: bool = True

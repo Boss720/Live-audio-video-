@@ -183,6 +183,9 @@ def settings(tmp_path: Path) -> AppSettings:
         mode="both",
         working_dir=tmp_path,
         workspace_root=tmp_path,
+        wake_word_enabled=False,
+        computer_use_enabled=False,
+        yolo=False,
         share_screen=False,
     )
 

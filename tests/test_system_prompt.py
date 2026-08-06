@@ -23,6 +23,9 @@ def _make_settings(workspace: Path, **overrides: Any) -> AppSettings:
         "mode": "text",
         "working_dir": workspace,
         "workspace_root": workspace,
+        "wake_word_enabled": False,
+        "computer_use_enabled": False,
+        "yolo": False,
         "share_screen": False,
         "minimize_to_tray": False,
     }

@@ -82,6 +82,9 @@ def _make_settings(tmp_path: Path, **overrides: Any) -> AppSettings:
         "mode": "text",
         "working_dir": tmp_path,
         "workspace_root": tmp_path,
+        "wake_word_enabled": False,
+        "computer_use_enabled": False,
+        "yolo": False,
         "share_screen": False,
         "minimize_to_tray": False,
     }
@@ -234,7 +237,7 @@ async def test_unaddressed_voice_turn_is_fully_suppressed(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
     """Background speech: no audio, no model transcript, no persisted turn."""
-    settings = _make_settings(tmp_path, wake_word_enabled=True)
+    settings = _make_settings(tmp_path, wake_word_enabled=True, wake_word="Bongo")
     live, session, command_queue, event_queue, journal, store = await _run_session(
         monkeypatch, tmp_path, settings
     )
@@ -293,7 +296,7 @@ async def test_addressed_voice_turn_passes_through(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
     """An utterance containing the wake word gets a normal response."""
-    settings = _make_settings(tmp_path, wake_word_enabled=True)
+    settings = _make_settings(tmp_path, wake_word_enabled=True, wake_word="Bongo")
     live, session, command_queue, event_queue, journal, store = await _run_session(
         monkeypatch, tmp_path, settings
     )
@@ -337,7 +340,7 @@ async def test_typed_text_is_exempt_from_gating(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
     """Typed input needs no wake word even when gating is enabled."""
-    settings = _make_settings(tmp_path, wake_word_enabled=True)
+    settings = _make_settings(tmp_path, wake_word_enabled=True, wake_word="Bongo")
     live, session, command_queue, event_queue, journal, store = await _run_session(
         monkeypatch, tmp_path, settings
     )
@@ -439,7 +442,7 @@ def test_gui_loads_wake_word_controls(qtbot: Any, tmp_path: Path) -> None:
 def test_gui_wake_word_round_trips_into_built_settings(
     qtbot: Any, tmp_path: Path
 ) -> None:
-    settings = _make_settings(tmp_path)
+    settings = _make_settings(tmp_path, wake_word="Bongo")
     window = MainWindow(settings)
     qtbot.addWidget(window)
 
