@@ -60,6 +60,39 @@ _TURN_COVERAGES: dict[str, types.TurnCoverage | None] = {
     "all_input": types.TurnCoverage.TURN_INCLUDES_ALL_INPUT,
 }
 
+_KNOWN_MODEL_ALIASES: dict[str, str] = {
+    "gemini-3.8-live-extended-thinking": "gemini-3.8-live-extended-thinking",
+    "gemini 3.8 live extended thinking": "gemini-3.8-live-extended-thinking",
+    "extended thinking": "gemini-3.8-live-extended-thinking",
+    "gemini-3.8-live": "gemini-3.8-live",
+    "gemini 3.8 live": "gemini-3.8-live",
+    "gemini-3.1-flash-live-preview": "gemini-3.1-flash-live-preview",
+    "gemini 3.1 flash live preview": "gemini-3.1-flash-live-preview",
+    "gemini-2.5-flash-native-audio-preview-12-2025": "gemini-2.5-flash-native-audio-preview-12-2025",
+    "gemini 2.5 flash native audio preview": "gemini-2.5-flash-native-audio-preview-12-2025",
+    "gemini-2.5-flash-native-audio": "gemini-2.5-flash-native-audio-preview-12-2025",
+}
+
+
+def canonicalize_model_name(name: str) -> str:
+    """Map display labels, friendly names, or resource IDs to canonical model IDs."""
+    if not name:
+        return name
+    raw = name.strip()
+    candidate = raw[len("models/") :] if raw.startswith("models/") else raw
+    lower = candidate.lower()
+    if lower in _KNOWN_MODEL_ALIASES:
+        return _KNOWN_MODEL_ALIASES[lower]
+    normalized = lower.replace("·", " ").replace("•", " ").replace("-", " ")
+    normalized = " ".join(normalized.split())
+    if normalized in _KNOWN_MODEL_ALIASES:
+        return _KNOWN_MODEL_ALIASES[normalized]
+    if "extended thinking" in normalized:
+        return "gemini-3.8-live-extended-thinking"
+    if "3.8" in normalized and "live" in normalized:
+        return "gemini-3.8-live"
+    return raw
+
 _SYSTEM_INSTRUCTION_TEMPLATE = """\
 You are a powerful AI assistant with direct access to the user's local computer. \
 You can read and write files, execute shell commands, list directories, and \
@@ -317,6 +350,13 @@ class AppSettings(BaseSettings):
     # "medium" is the default: "minimal" caused failed multi-step tasks.
     thinking_level: str = "medium"  # minimal, low, medium, high
     google_search_enabled: bool = True
+
+    @field_validator("model", "fallback_model", mode="before")
+    @classmethod
+    def _validate_model(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return canonicalize_model_name(value)
+        return value
 
     @field_validator("voice")
     @classmethod

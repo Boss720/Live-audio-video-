@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from settings.settings import AppSettings
+from settings.settings import AppSettings, canonicalize_model_name
 
 
 @pytest.fixture
@@ -97,3 +97,45 @@ def test_unknown_override_still_rejected(config_dir: Path, tmp_path: Path) -> No
             workspace_root=tmp_path,
             voise="Charon",  # typo, not a real field
         )
+
+
+def test_canonicalize_model_name() -> None:
+    assert (
+        canonicalize_model_name("Gemini 3.8 Live · Extended Thinking")
+        == "gemini-3.8-live-extended-thinking"
+    )
+    assert (
+        canonicalize_model_name("Gemini 3.8 Live • Extended Thinking")
+        == "gemini-3.8-live-extended-thinking"
+    )
+    assert (
+        canonicalize_model_name("extended thinking")
+        == "gemini-3.8-live-extended-thinking"
+    )
+    assert canonicalize_model_name("Gemini 3.8 Live") == "gemini-3.8-live"
+    assert canonicalize_model_name("models/gemini-3.8-live") == "gemini-3.8-live"
+    assert (
+        canonicalize_model_name("gemini-3.8-live-extended-thinking")
+        == "gemini-3.8-live-extended-thinking"
+    )
+    assert canonicalize_model_name("models/custom-model") == "models/custom-model"
+    assert canonicalize_model_name("my-custom-endpoint") == "my-custom-endpoint"
+
+
+def test_load_canonicalizes_model_and_fallback(
+    config_dir: Path, tmp_path: Path
+) -> None:
+    _write_settings(
+        config_dir,
+        {
+            "model": "Gemini 3.8 Live · Extended Thinking",
+            "fallback_model": "Gemini 2.5 Flash Native Audio Preview",
+        },
+    )
+    settings = AppSettings.load(working_dir=tmp_path, workspace_root=tmp_path)
+    assert settings.model == "gemini-3.8-live-extended-thinking"
+    assert (
+        settings.fallback_model
+        == "gemini-2.5-flash-native-audio-preview-12-2025"
+    )
+

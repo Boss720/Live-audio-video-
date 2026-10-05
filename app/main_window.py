@@ -76,7 +76,11 @@ from core.events import (
 from media import devices as media_devices
 from obs.logging_setup import get_run_id, setup_logging
 from settings.secrets import get_api_key, get_free_api_key, set_api_key
-from settings.settings import AVAILABLE_VOICES, AppSettings
+from settings.settings import (
+    AVAILABLE_VOICES,
+    AppSettings,
+    canonicalize_model_name,
+)
 
 _AVAILABLE_VOICES = AVAILABLE_VOICES
 _MODES = ("text", "voice", "both")
@@ -462,11 +466,12 @@ class MainWindow(QMainWindow):
 
     def _load_settings_to_ui(self) -> None:
         """Populate controls from the initial AppSettings."""
-        model_index = self._model_combo.findData(self._settings.model)
+        canonical_model = canonicalize_model_name(self._settings.model)
+        model_index = self._model_combo.findData(canonical_model)
         if model_index >= 0:
             self._model_combo.setCurrentIndex(model_index)
         else:
-            self._model_combo.setEditText(self._settings.model)
+            self._model_combo.setEditText(canonical_model)
         self._voice_combo.setCurrentText(self._settings.voice)
         self._mode_combo.setCurrentText(self._settings.mode.title())
         self._share_screen_check.setChecked(self._settings.share_screen)
@@ -493,12 +498,17 @@ class MainWindow(QMainWindow):
         working_dir = Path(self._working_dir_edit.text().strip() or ".")
         model_index = self._model_combo.currentIndex()
         model_text = self._model_combo.currentText().strip()
-        model = (
-            self._model_combo.currentData()
-            if model_index >= 0
+        idx_by_text = self._model_combo.findText(model_text)
+        if idx_by_text >= 0 and self._model_combo.itemData(idx_by_text):
+            model = self._model_combo.itemData(idx_by_text)
+        elif (
+            model_index >= 0
             and model_text == self._model_combo.itemText(model_index)
-            else model_text
-        )
+            and self._model_combo.itemData(model_index)
+        ):
+            model = self._model_combo.itemData(model_index)
+        else:
+            model = canonicalize_model_name(model_text)
         updates: dict[str, Any] = {
             "model": model,
             "voice": self._voice_combo.currentText(),

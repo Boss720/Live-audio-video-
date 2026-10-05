@@ -58,7 +58,7 @@ from obs.logging_setup import get_logger
 from persist.store import Store
 from policy import PolicyEngine
 from settings.secrets import get_api_key
-from settings.settings import AppSettings
+from settings.settings import AppSettings, canonicalize_model_name
 from tools import build_function_declarations
 from tools import computer as computer_tools
 from tools import registry as tool_registry
@@ -145,7 +145,7 @@ _THINKING_LEVEL_BY_SETTING: dict[str, types.ThinkingLevel] = {
 
 def _model_id(model: str) -> str:
     """Return the model id without an optional ``models/`` resource prefix."""
-    return model.rsplit("/", 1)[-1]
+    return canonicalize_model_name(model).rsplit("/", 1)[-1]
 
 
 def _is_extended_thinking_model(model: str) -> bool:
@@ -164,7 +164,7 @@ def _supports_google_search(model: str) -> bool:
     google_search at connect time (1011 quota/internal errors); the 2.5
     native-audio family accepts it.
     """
-    return model.startswith("gemini-2.5-flash-native-audio")
+    return _model_id(model).startswith("gemini-2.5-flash-native-audio")
 
 
 def _supports_affective_dialog(model: str) -> bool:
@@ -174,7 +174,7 @@ def _supports_affective_dialog(model: str) -> bool:
     affective dialog at connect time (1011 quota/internal errors); the 2.5
     native-audio family accepts it.
     """
-    return model.startswith("gemini-2.5-flash-native-audio")
+    return _model_id(model).startswith("gemini-2.5-flash-native-audio")
 
 
 def _build_tools(settings: AppSettings) -> list[types.Tool]:
@@ -460,9 +460,10 @@ class LiveSession:
                 raise ValueError("No API key configured")
 
             client = genai.Client(api_key=api_key)
+            canonical_model = canonicalize_model_name(self._settings.model)
             connect_config = self._settings.as_connect_config(
                 tools=_apply_function_behavior(
-                    _build_tools(self._settings), self._settings.model
+                    _build_tools(self._settings), canonical_model
                 ),
                 resumption_handle=self._resumption_handle,
             )
@@ -472,13 +473,13 @@ class LiveSession:
 
             await self._emit(ConnectionStateChanged(ConnectionState.CONNECTING))
             async with client.aio.live.connect(
-                model=self._settings.model,
+                model=canonical_model,
                 config=connect_config,
             ) as session:
                 self._session = session
                 await self._emit(ConnectionStateChanged(ConnectionState.LIVE))
                 self._journal.connection_event(
-                    "connected", self._settings.model, epoch=self._epoch
+                    "connected", canonical_model, epoch=self._epoch
                 )
                 if self._on_connected is not None:
                     await self._on_connected(self)
