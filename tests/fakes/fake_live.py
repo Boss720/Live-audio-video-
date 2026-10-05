@@ -23,6 +23,7 @@ def _server_content(
     turn_complete: bool = False,
     interrupted: bool = False,
     generation_complete: bool = False,
+    interaction_status: types.InteractionStatus | None = None,
 ) -> types.LiveServerContent:
     parts: list[types.Part] = []
     if model_text:
@@ -38,6 +39,7 @@ def _server_content(
         turn_complete=turn_complete,
         interrupted=interrupted,
         generation_complete=generation_complete,
+        interaction_status=interaction_status,
     )
 
 
@@ -173,6 +175,8 @@ class FakeLiveSession:
         *,
         turn_complete: bool = False,
         input_text: str | None = None,
+        generation_complete: bool = False,
+        interaction_status: types.InteractionStatus | None = None,
     ) -> None:
         """Enqueue a server content message containing ``text``."""
         self.emit(
@@ -181,6 +185,8 @@ class FakeLiveSession:
                     model_text=text,
                     input_text=input_text,
                     turn_complete=turn_complete,
+                    generation_complete=generation_complete,
+                    interaction_status=interaction_status,
                 )
             )
         )

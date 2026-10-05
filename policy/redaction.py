@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 _PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"AIza[0-9A-Za-z\-_]{35}"), "[REDACTED: Google API key]"),
@@ -29,3 +30,16 @@ def redact(text: str) -> str:
     for pattern, replacement in _PATTERNS:
         scrubbed = pattern.sub(replacement, scrubbed)
     return scrubbed
+
+
+def redact_data(data: Any) -> Any:
+    """Recursively scrub secrets from strings, dictionaries, lists, or tuples."""
+    if isinstance(data, str):
+        return redact(data)
+    if isinstance(data, dict):
+        return {k: redact_data(v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [redact_data(item) for item in data]
+    if isinstance(data, tuple):
+        return tuple(redact_data(item) for item in data)
+    return data

@@ -131,3 +131,33 @@ async def test_no_emit_when_text_unchanged() -> None:
     # No new text has arrived, so another flush should be empty.
     await asyncio.sleep(0.05)
     assert ts.flush() == []
+
+
+def test_user_turns_complete_and_advance_turn_id() -> None:
+    ts = TurnState(coalesce_ms=0.0)
+
+    # First exchange: user speaks, then turn completes.
+    events1 = ts.consume_server_content(
+        _server_content(input_text="first user turn", turn_complete=True)
+    )
+    user_completes1 = [
+        e
+        for e in events1
+        if isinstance(e, TurnComplete) and e.source == TranscriptSource.USER
+    ]
+    assert len(user_completes1) == 1
+    assert user_completes1[0].text == "first user turn"
+    assert user_completes1[0].turn_id == 0
+
+    # Second exchange: user speaks again. Transcript text must NOT accumulate from previous turn.
+    events2 = ts.consume_server_content(
+        _server_content(input_text="second user turn", turn_complete=True)
+    )
+    user_completes2 = [
+        e
+        for e in events2
+        if isinstance(e, TurnComplete) and e.source == TranscriptSource.USER
+    ]
+    assert len(user_completes2) == 1
+    assert user_completes2[0].text == "second user turn"
+    assert user_completes2[0].turn_id == 1

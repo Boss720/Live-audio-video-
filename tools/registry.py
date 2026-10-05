@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 from google.genai import types
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -124,8 +124,19 @@ class ComputerScrollArgs(BaseModel):
 
     direction: str = Field(..., description="Scroll direction: up, down, left, or right.")
     amount: int = Field(3, ge=1, le=100, description="Wheel clicks to scroll (1-100).")
-    x: int | None = Field(None, ge=0, le=1000, description=_COORD_X + " Optional.")
-    y: int | None = Field(None, ge=0, le=1000, description=_COORD_Y + " Optional.")
+    x: int | None = Field(
+        None, ge=0, le=1000, description=_COORD_X + " Optional; provide with y."
+    )
+    y: int | None = Field(
+        None, ge=0, le=1000, description=_COORD_Y + " Optional; provide with x."
+    )
+
+    @model_validator(mode="after")
+    def coordinates_are_a_pair(self) -> ComputerScrollArgs:
+        """Reject a half-position instead of silently scrolling elsewhere."""
+        if (self.x is None) != (self.y is None):
+            raise ValueError("x and y must be provided together, or both omitted")
+        return self
 
 
 class ComputerScreenshotArgs(BaseModel):

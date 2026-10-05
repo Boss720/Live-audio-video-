@@ -20,7 +20,7 @@ from google.genai import types
 
 import tools._state as tools_state
 from audit.journal import Journal
-from core.commands import AgentCommand, Disconnect
+from core.commands import AgentCommand, Disconnect, GatingMode
 from core.dispatcher import ToolDispatcher
 from core.events import (
     AudioLevel,
@@ -181,6 +181,8 @@ class Supervisor:
             epoch=self._epoch,
             store=self._store,
         )
+        if self._settings.yolo:
+            self._dispatcher.set_gating_mode(GatingMode.YOLO)
 
         # The tool implementations keep their own module-level policy as a
         # safety net. Point it at the *same* engine and the session workspace,
@@ -245,7 +247,7 @@ class Supervisor:
                 if reason.code == "user_request":
                     return reason
 
-                if reason.code in ("auth_error", "not_found"):
+                if reason.code in ("auth_error", "not_found", "invalid_request"):
                     detail = reason.detail or f"{reason.code}"
                     await self._emit(
                         ConnectionStateChanged(ConnectionState.FAILED, detail=detail)
@@ -497,6 +499,7 @@ class Supervisor:
         """Map a session disconnect reason to the supervisor category."""
         if reason.code in (
             "transient",
+            "invalid_request",
             "rejected_handle",
             "quota",
             "go_away",
@@ -545,6 +548,9 @@ class Supervisor:
             return enriched
         if isinstance(event, UsageUpdate):
             self._record_tier_usage(event)
+            if self._current_tier is not None and self._current_tier.tier_name == "free":
+                return replace(event, estimated_usd=None)
+            return event
         return event
 
     def _record_tier_usage(self, event: UsageUpdate) -> None:

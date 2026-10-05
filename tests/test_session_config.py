@@ -23,12 +23,14 @@ from google.genai import types
 
 from audit.journal import Journal
 from core.commands import Disconnect
-from core.events import ConnectionState, ConnectionStateChanged
+from core.events import ConnectionState, ConnectionStateChanged, TurnComplete
 from core.session import (
     LiveSession,
     _apply_function_behavior,
     _build_tools,
     _response_scheduling_for,
+    _session_config_fields,
+    _should_reset_turn_gate,
 )
 from persist.store import Store
 from settings.settings import AppSettings
@@ -152,6 +154,7 @@ async def test_affective_dialog_forced_off_on_unsupported_model(
     ("setting", "expected"),
     [
         ("minimal", types.ThinkingLevel.MINIMAL),
+        ("low", types.ThinkingLevel.LOW),
         ("medium", types.ThinkingLevel.MEDIUM),
         ("high", types.ThinkingLevel.HIGH),
     ],
@@ -163,6 +166,129 @@ async def test_thinking_level_mapped(
     config = await _connect_config(monkeypatch, settings, tmp_path)
     assert config.thinking_config is not None
     assert config.thinking_config.thinking_level == expected
+
+
+def test_gemini_38_standard_omits_thinking_config(settings: AppSettings) -> None:
+    settings.model = "gemini-3.8-live"
+    assert "thinking_config" not in _session_config_fields(settings)
+
+
+def test_gemini_38_extended_thinking_uses_configurable_level(
+    settings: AppSettings,
+) -> None:
+    settings.model = "gemini-3.8-live-extended-thinking"
+    settings.thinking_level = "low"
+    fields = _session_config_fields(settings)
+    assert fields["thinking_config"].thinking_level == types.ThinkingLevel.LOW
+
+
+@pytest.mark.asyncio
+async def test_missing_api_key_returns_a_reported_auth_error(
+    monkeypatch: Any, settings: AppSettings, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("core.session.get_api_key", lambda: None)
+    command_queue: asyncio.Queue[Any] = asyncio.Queue()
+    event_queue: asyncio.Queue[Any] = asyncio.Queue()
+    journal = Journal(run_id="missing-key", log_dir=tmp_path)
+    session = LiveSession(
+        settings=settings,
+        command_queue=command_queue,
+        event_queue=event_queue,
+        journal=journal,
+        store=Store(db_path=tmp_path / "missing-key.db"),
+        run_id="missing-key",
+    )
+
+    reason = await session.run()
+    events: list[Any] = []
+    while not event_queue.empty():
+        events.append(event_queue.get_nowait())
+
+    assert reason.code == "auth_error"
+    assert any(
+        isinstance(event, ConnectionStateChanged)
+        and event.state == ConnectionState.ERROR
+        and "No API key configured" in event.detail
+        for event in events
+    )
+    assert events[-1].state == ConnectionState.DISCONNECTED
+    journal._close()
+
+
+def test_extended_thinking_keeps_turn_gate_during_filler() -> None:
+    from types import SimpleNamespace
+
+    filler = SimpleNamespace(
+        turn_complete=True, interrupted=False, interaction_status="IN_PROGRESS"
+    )
+    final = SimpleNamespace(
+        turn_complete=True, interrupted=False, interaction_status="IDLE"
+    )
+    model = "gemini-3.8-live-extended-thinking"
+
+    assert not _should_reset_turn_gate(model, filler)
+    assert _should_reset_turn_gate(model, final)
+    assert _should_reset_turn_gate("gemini-3.8-live", filler)
+
+
+@pytest.mark.asyncio
+async def test_extended_thinking_filler_and_final_are_one_persisted_turn(
+    monkeypatch: Any, settings: AppSettings, tmp_path: Path
+) -> None:
+    settings.model = "gemini-3.8-live-extended-thinking"
+    live = FakeLive()
+    _patch_common(monkeypatch, live)
+    command_queue: asyncio.Queue[Any] = asyncio.Queue()
+    event_queue: asyncio.Queue[Any] = asyncio.Queue()
+    journal = Journal(run_id="extended-turn", log_dir=tmp_path)
+    store = Store(db_path=tmp_path / "extended-turn.db")
+    session = LiveSession(
+        settings=settings,
+        command_queue=command_queue,
+        event_queue=event_queue,
+        journal=journal,
+        store=store,
+        run_id="extended-turn",
+    )
+    runner = asyncio.create_task(session.run())
+    try:
+        await _wait_live(event_queue)
+        fake_session = live.latest_session
+        assert fake_session is not None
+
+        # generation_complete is normalized to turn_complete by LiveSession;
+        # interaction_status must still keep this filler inside the open turn.
+        fake_session.say(
+            "Checking the result. ",
+            generation_complete=True,
+            interaction_status=types.InteractionStatus.IN_PROGRESS,
+        )
+        await asyncio.sleep(0.12)
+        filler_events: list[Any] = []
+        while not event_queue.empty():
+            filler_events.append(event_queue.get_nowait())
+        assert not any(isinstance(event, TurnComplete) for event in filler_events)
+        assert store.get_turns("extended-turn") == []
+
+        fake_session.say(
+            "The final answer.",
+            turn_complete=True,
+            interaction_status=types.InteractionStatus.IDLE,
+        )
+        while True:
+            event = await asyncio.wait_for(event_queue.get(), timeout=5)
+            if isinstance(event, TurnComplete):
+                break
+
+        assert event.text == "Checking the result. The final answer."
+        assert event.turn_id == 0
+        persisted = store.get_turns("extended-turn")
+        assert len(persisted) == 1
+        assert persisted[0][1] == event.text
+    finally:
+        await command_queue.put(Disconnect())
+        await asyncio.wait_for(runner, timeout=5)
+        journal._close()
 
 
 # ----------------------------------------------------------------------
@@ -195,6 +321,18 @@ async def test_google_search_included_only_when_enabled(
     settings.google_search_enabled = False
     config = await _connect_config(monkeypatch, settings, tmp_path)
     assert all(tool.google_search is None for tool in _typed_tools(config))
+
+
+async def test_gemini_38_live_supports_search_without_thinking_config(
+    monkeypatch: Any, settings: AppSettings, tmp_path: Path
+) -> None:
+    settings.model = "gemini-3.8-live"
+    settings.google_search_enabled = True
+    config = await _connect_config(monkeypatch, settings, tmp_path)
+
+    assert any(tool.google_search is not None for tool in _typed_tools(config))
+    assert config.thinking_config is None
+    assert not config.enable_affective_dialog
 
 
 async def test_google_search_dropped_on_unsupported_model(
@@ -265,6 +403,22 @@ def test_apply_function_behavior_stamps_declarations(monkeypatch: Any) -> None:
     assert behavior_by_name["write_file"] == types.Behavior.BLOCKING
 
 
+def test_extended_thinking_makes_all_function_tools_non_blocking() -> None:
+    tools = _apply_function_behavior(
+        _build_tools_for_helper_test(), "gemini-3.8-live-extended-thinking"
+    )
+    declarations = [
+        declaration
+        for tool in tools
+        for declaration in (tool.function_declarations or [])
+    ]
+    assert declarations
+    assert all(
+        declaration.behavior == types.Behavior.NON_BLOCKING
+        for declaration in declarations
+    )
+
+
 def test_response_scheduling_for_non_blocking_only(monkeypatch: Any) -> None:
     from tools import registry as tool_registry
 
@@ -289,6 +443,10 @@ def test_response_scheduling_for_non_blocking_only(monkeypatch: Any) -> None:
     # Blocking tools carry no scheduling hint; the API ignores it there.
     assert _response_scheduling_for("write_file") is None
     assert _response_scheduling_for("unknown_tool") is None
+    assert (
+        _response_scheduling_for("write_file", "gemini-3.8-live-extended-thinking")
+        == types.FunctionResponseScheduling.WHEN_IDLE
+    )
 
 
 def test_build_tools_falls_back_without_registry_builder(monkeypatch: Any) -> None:

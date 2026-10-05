@@ -20,3 +20,7 @@ htmlcov/
 coverage.xml
 *.log
 logs/
+# Added per user request: keep locally-created LICENSE out of git
+/LICENSE
+.agents/
+.pytest-codex-tmp/

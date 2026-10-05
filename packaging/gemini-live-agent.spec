@@ -80,6 +80,7 @@ a = Analysis(
         "pygetwindow._pygetwindow_win",
         "pyrect",
         "mouseinfo",
+        "bridge_stdio",
     ],
     hookspath=[],
     hooksconfig={},
@@ -87,6 +88,18 @@ a = Analysis(
     excludes=excludes,
     noarchive=False,
 )
+
+# Windows resolves API-set contracts through its own API-set schema. PyInstaller
+# may find same-named shims on the build host's PATH and bundle those host-specific
+# copies. Likewise, Qt uses the system ICU on Windows; an unrelated ICU on PATH
+# can shadow it and fail Qt6Core's import table. Exclude both host-only dependency
+# families so the installed app uses Windows' API-set and ICU implementations.
+_HOST_RUNTIME_DLL_PREFIXES = ("api-ms-win-", "ext-ms-win-", "icu")
+a.binaries = [
+    entry
+    for entry in a.binaries
+    if not os.path.basename(entry[0]).lower().startswith(_HOST_RUNTIME_DLL_PREFIXES)
+]
 
 pyz = PYZ(a.pure)
 

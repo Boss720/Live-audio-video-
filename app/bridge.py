@@ -141,7 +141,7 @@ class Bridge(QThread):
             elif event.source == "speaker":
                 self._speaker_level = event.level
 
-    @Slot(object)
+    @Slot(object)  # PySide's stub loses AgentCommand unions.
     def send_command(self, command: AgentCommand) -> None:
         """Forward a command from the GUI thread to the asyncio core."""
         if self._stopped and not isinstance(command, Disconnect):

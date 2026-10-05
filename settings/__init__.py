@@ -9,9 +9,10 @@ from settings.secrets import (
     set_api_key,
     set_free_api_key,
 )
-from settings.settings import AppSettings
+from settings.settings import AVAILABLE_VOICES, AppSettings
 
 __all__ = [
+    "AVAILABLE_VOICES",
     "AppSettings",
     "get_api_key",
     "get_free_api_key",

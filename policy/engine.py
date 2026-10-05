@@ -5,6 +5,7 @@ No PySide6 here.
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import fnmatch
 import os
@@ -178,6 +179,8 @@ class PolicyEngine:
         5. Allow only if under one of the configured ``allow_roots``.
         6. Apply deny globs.
         7. Apply name-based deny patterns (``.env*``, ``*.pem``, etc.).
+        8. For writes, if target exists or is a symlink, resolve final target
+           and ensure it does not escape allow_roots, match deny globs, or hit immutable roots.
         """
         expanded = os.path.expandvars(os.path.expanduser(raw))
         p = Path(expanded)
@@ -200,6 +203,27 @@ class PolicyEngine:
 
         if self._deny_by_name(p):
             raise PathDeniedError(f"path matches denied name pattern: {p}")
+
+        if for_write:
+            # Check if target already exists or is a symlink/reparse point
+            is_symlink = False
+            with contextlib.suppress(OSError):
+                is_symlink = p.is_symlink()
+
+            target_exists = False
+            with contextlib.suppress(OSError):
+                target_exists = p.exists()
+
+            if is_symlink or target_exists:
+                target = _long_path(p.resolve(strict=False))
+                if not any(_is_under(target, root) for root in self._allow_roots):
+                    raise PathDeniedError(f"symlink target escapes allowed roots: {target}")
+                if _matches_any(target.as_posix(), self._deny_globs):
+                    raise PathDeniedError(f"symlink target matches deny glob: {target}")
+                if self._deny_by_name(target):
+                    raise PathDeniedError(f"symlink target matches denied name pattern: {target}")
+                if self._is_immutable(target):
+                    raise PathDeniedError(f"symlink target is immutable: {target}")
 
         return p
 
@@ -233,8 +257,16 @@ class PolicyEngine:
             except PathDeniedError as exc:
                 return Deny(str(exc))
 
-            if name in _WRITE_TOOLS and self._is_immutable(resolved):
-                return Deny(f"immutable path: {resolved}")
+            if name in _WRITE_TOOLS:
+                if self._is_immutable(resolved):
+                    return Deny(f"immutable path: {resolved}")
+                # Also check resolved target if it exists / is symlink
+                try:
+                    final_target = _long_path(resolved.resolve(strict=False))
+                    if self._is_immutable(final_target):
+                        return Deny(f"immutable path: {final_target}")
+                except OSError:
+                    pass
 
         # Destructive tools require confirmation unless yolo mode is active.
         if name in _DESTRUCTIVE_TOOLS and self._gating_mode != GatingMode.YOLO:

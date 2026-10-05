@@ -45,7 +45,6 @@ from core.events import (
     RateLimitHit,
     SessionError,
     SessionExpiring,
-    TranscriptSource,
     TurnComplete,
     UsageUpdate,
 )
@@ -53,7 +52,7 @@ from core.turn_state import TurnState
 from core.wake_word import contains_wake_word
 from media import devices
 from media.microphone import INPUT_SAMPLE_RATE, Microphone
-from media.screen import ScreenCapture, capture_jpeg
+from media.screen import ScreenCapture, capture_jpeg, validate_monitor
 from media.speaker import Speaker
 from obs.logging_setup import get_logger
 from persist.store import Store
@@ -137,17 +136,38 @@ _MEDIA_RESOLUTION_BY_SETTING: dict[str, types.MediaResolution] = {
 
 _THINKING_LEVEL_BY_SETTING: dict[str, types.ThinkingLevel] = {
     "minimal": types.ThinkingLevel.MINIMAL,
+    "low": types.ThinkingLevel.LOW,
     "medium": types.ThinkingLevel.MEDIUM,
     "high": types.ThinkingLevel.HIGH,
 }
 
 
-def _supports_search_and_affective(model: str) -> bool:
-    """Whether the model accepts google_search and affective dialog.
+def _model_id(model: str) -> str:
+    """Return the model id without an optional ``models/`` resource prefix."""
+    return model.rsplit("/", 1)[-1]
+
+
+def _is_extended_thinking_model(model: str) -> bool:
+    return _model_id(model).startswith("gemini-3.8-live-extended-thinking")
+
+
+def _is_gemini_38_live_model(model: str) -> bool:
+    return _model_id(model).startswith("gemini-3.8-live")
+
+
+def _supports_google_search(model: str) -> bool:
+    """Whether the model accepts the Google Search grounding tool."""
+    return model.startswith("gemini-2.5-flash-native-audio") or _is_gemini_38_live_model(
+        model
+    )
+
+
+def _supports_affective_dialog(model: str) -> bool:
+    """Whether the model accepts affective dialog.
 
     Verified live against the API: ``gemini-3.1-flash-live-preview`` rejects
-    both at connect time (1011 quota/internal errors); the 2.5 native-audio
-    family accepts them.
+    affective dialog at connect time (1011 quota/internal errors); the 2.5
+    native-audio family accepts it.
     """
     return model.startswith("gemini-2.5-flash-native-audio")
 
@@ -159,7 +179,7 @@ def _build_tools(settings: AppSettings) -> list[types.Tool]:
     google_search / code_execution tools) supersedes the per-declaration
     ``build_function_declarations`` entry point; fall back to the legacy path
     when the registry does not expose it yet. google_search is dropped on
-    models that reject it (see ``_supports_search_and_affective``).
+    models that reject it.
     """
     build_tools = getattr(tool_registry, "build_tools", None)
     if build_tools is not None:
@@ -168,7 +188,7 @@ def _build_tools(settings: AppSettings) -> list[types.Tool]:
         tools = list(
             build_function_declarations(computer_use=settings.computer_use_enabled)
         )
-    if not _supports_search_and_affective(settings.model):
+    if not _supports_google_search(settings.model):
         tools = [tool for tool in tools if tool.google_search is None]
     return tools
 
@@ -179,8 +199,27 @@ def _tool_schedules() -> dict[str, str]:
     return dict(schedules) if schedules else {}
 
 
-def _apply_function_behavior(tools: list[types.Tool]) -> list[types.Tool]:
+def _apply_function_behavior(
+    tools: list[types.Tool], model: str | None = None
+) -> list[types.Tool]:
     """Stamp each declaration with the ``Behavior`` its schedule implies."""
+    if model is not None and _is_extended_thinking_model(model):
+        return [
+            tool.model_copy(
+                update={
+                    "function_declarations": [
+                        declaration.model_copy(
+                            update={"behavior": types.Behavior.NON_BLOCKING}
+                        )
+                        for declaration in (tool.function_declarations or [])
+                    ]
+                }
+            )
+            if tool.function_declarations
+            else tool
+            for tool in tools
+        ]
+
     schedules = _tool_schedules()
     if not schedules:
         return tools
@@ -203,9 +242,15 @@ def _apply_function_behavior(tools: list[types.Tool]) -> list[types.Tool]:
     return result
 
 
-def _response_scheduling_for(name: str) -> types.FunctionResponseScheduling | None:
+def _response_scheduling_for(
+    name: str, model: str | None = None
+) -> types.FunctionResponseScheduling | None:
     """Scheduling to attach to a tool response, or ``None`` for blocking tools."""
     schedule = _tool_schedules().get(name)
+    if model is not None and _is_extended_thinking_model(model):
+        return _RESPONSE_SCHEDULING_BY_SCHEDULE.get(
+            schedule or "", types.FunctionResponseScheduling.WHEN_IDLE
+        )
     if schedule is None:
         return None
     return _RESPONSE_SCHEDULING_BY_SCHEDULE.get(schedule)
@@ -218,14 +263,50 @@ def _session_config_fields(settings: AppSettings) -> dict[str, Any]:
     Live API backend rejects it (``Unknown name "safetySettings" at 'setup'``),
     so it is deliberately not sent.
     """
-    return {
+    fields: dict[str, Any] = {
         "media_resolution": _MEDIA_RESOLUTION_BY_SETTING[settings.media_resolution],
         "enable_affective_dialog": settings.enable_affective_dialog
-        and _supports_search_and_affective(settings.model),
-        "thinking_config": types.ThinkingConfig(
-            thinking_level=_THINKING_LEVEL_BY_SETTING[settings.thinking_level]
-        ),
+        and _supports_affective_dialog(settings.model),
     }
+    # Gemini 3.8 Live has a fixed latency profile and rejects thinking_config.
+    # Its Extended Thinking sibling accepts low/medium/high and needs the
+    # interaction_status lifecycle handled by the Live SDK.
+    if not _is_gemini_38_live_model(settings.model) or _is_extended_thinking_model(
+        settings.model
+    ):
+        fields["thinking_config"] = types.ThinkingConfig(
+            thinking_level=_THINKING_LEVEL_BY_SETTING[settings.thinking_level]
+        )
+    return fields
+
+
+def _interaction_in_progress(server_content: Any) -> bool:
+    """Whether a Live server message says reasoning continues after this turn."""
+    status = getattr(server_content, "interaction_status", None)
+    status = getattr(status, "value", status)
+    status_name = str(status).rsplit(".", 1)[-1].upper()
+    return status_name in {"IN_PROGRESS", "REQUIRES_ACTION"}
+
+
+def _should_reset_turn_gate(model: str, server_content: Any) -> bool:
+    """Keep wake-word/frame state across Extended Thinking filler turns."""
+    if getattr(server_content, "interrupted", False):
+        return True
+    if not getattr(server_content, "turn_complete", False):
+        return False
+    return not (
+        _is_extended_thinking_model(model)
+        and _interaction_in_progress(server_content)
+    )
+
+
+def _turn_state_content(
+    model: str, server_content: types.LiveServerContent
+) -> types.LiveServerContent:
+    """Keep Extended Thinking filler turns inside the same transcript turn."""
+    if _is_extended_thinking_model(model) and _interaction_in_progress(server_content):
+        return server_content.model_copy(update={"turn_complete": False})
+    return server_content
 
 
 class LiveSession:
@@ -307,6 +388,7 @@ class LiveSession:
         self._mic = mic
         self._speaker = speaker
         self._screen = screen
+        self._screen_monitor = settings.screen_monitor
 
         self._on_resumption_handle = on_resumption_handle
         self._on_connected = on_connected
@@ -338,6 +420,7 @@ class LiveSession:
         # One frame per user utterance, so "what am I looking at?" does not wait
         # for the next heartbeat. Strong refs: asyncio only holds weak ones.
         self._frame_tasks: set[asyncio.Task[Any]] = set()
+        self._frame_lock = asyncio.Lock()
         self._frame_sent_this_utterance = False
         self._shutdown_event = asyncio.Event()
         self._mic_gate_open = True
@@ -353,35 +436,36 @@ class LiveSession:
 
     async def run(self) -> DisconnectReason:
         """Connect to the API, spawn loops, and return when the session ends."""
-        policy = PolicyEngine(
-            allow_roots=[self._settings.workspace_root],
-            deny_globs=[r"*\.git\*", "__pycache__"],
-            never_allow_regex=[
-                r"AIza[0-9A-Za-z\-_]{35}",
-                r"sk-[A-Za-z0-9]{20,}",
-                r"ghp_[A-Za-z0-9]{36}",
-            ],
-        )
-        set_policy_engine(policy)
-        set_workspace_root(self._settings.workspace_root)
-        computer_tools.set_monitor(self._settings.screen_monitor)
-
-        api_key = get_api_key()
-        if api_key is None:
-            raise ValueError("No API key configured")
-
-        client = genai.Client(api_key=api_key)
-        connect_config = self._settings.as_connect_config(
-            tools=_apply_function_behavior(_build_tools(self._settings)),
-            resumption_handle=self._resumption_handle,
-        )
-        connect_config = connect_config.model_copy(
-            update=_session_config_fields(self._settings)
-        )
-
-        await self._emit(ConnectionStateChanged(ConnectionState.CONNECTING))
-
         try:
+            policy = PolicyEngine(
+                allow_roots=[self._settings.workspace_root],
+                deny_globs=[r"*\.git\*", "__pycache__"],
+                never_allow_regex=[
+                    r"AIza[0-9A-Za-z\-_]{35}",
+                    r"sk-[A-Za-z0-9]{20,}",
+                    r"ghp_[A-Za-z0-9]{36}",
+                ],
+            )
+            set_policy_engine(policy)
+            set_workspace_root(self._settings.workspace_root)
+            computer_tools.set_monitor(self._settings.screen_monitor)
+
+            api_key = get_api_key()
+            if api_key is None:
+                raise ValueError("No API key configured")
+
+            client = genai.Client(api_key=api_key)
+            connect_config = self._settings.as_connect_config(
+                tools=_apply_function_behavior(
+                    _build_tools(self._settings), self._settings.model
+                ),
+                resumption_handle=self._resumption_handle,
+            )
+            connect_config = connect_config.model_copy(
+                update=_session_config_fields(self._settings)
+            )
+
+            await self._emit(ConnectionStateChanged(ConnectionState.CONNECTING))
             async with client.aio.live.connect(
                 model=self._settings.model,
                 config=connect_config,
@@ -517,7 +601,7 @@ class LiveSession:
             if reason is None:
                 reason = API_CLOSE
 
-            # Signal the remaining loops to exit, then cancel them.
+            # Signal remaining loops to exit, then cancel pending tasks.
             self._shutdown_event.set()
             await self._stop_media()
 
@@ -538,7 +622,44 @@ class LiveSession:
             return reason
 
         finally:
+            self._shutdown_event.set()
+            for t in list(self._frame_tasks):
+                t.cancel()
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            for t in tasks:
+                if not t.done():
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await t
             await self._stop_media()
+
+    def _evaluate_wake_gate_if_needed(self) -> bool:
+        """Evaluate wake-word addressing if not already evaluated for this turn.
+
+        Returns True only on the call that first triggers the gate, so callers
+        can flush playback and surface an activity event exactly once per gated turn.
+        """
+        if not self._settings.wake_word_enabled:
+            return False
+        if not self._turn_evaluated:
+            self._turn_evaluated = True
+            addressed = self._text_turn_pending or contains_wake_word(
+                self._utterance_text,
+                self._settings.wake_word,
+                self._settings.wake_word_aliases,
+            )
+            logger.info(
+                "[WAKE] %s wake=%r aliases=%r heard=%r",
+                "ADDRESSED" if addressed else "GATED (no response sent)",
+                self._settings.wake_word,
+                self._settings.wake_word_aliases,
+                self._utterance_text.strip()[:200],
+            )
+            if not addressed:
+                self._turn_gated = True
+                return True
+        return False
 
     def _update_wake_gate(self, server_content: Any) -> bool:
         """Update wake-word gating from a server content chunk.
@@ -561,28 +682,8 @@ class LiveSession:
                 and server_content.output_transcription.text
             )
         )
-        if has_model_output and not self._turn_evaluated:
-            self._turn_evaluated = True
-            addressed = self._text_turn_pending or contains_wake_word(
-                self._utterance_text,
-                self._settings.wake_word,
-                self._settings.wake_word_aliases,
-            )
-            # Log the transcript either way. A gated turn produces no audio and
-            # no transcript bubble, so without this line "the agent ignored me"
-            # is indistinguishable from "the agent never heard me", and the one
-            # piece of evidence that separates them — what ASR actually
-            # returned — is discarded.
-            logger.info(
-                "[WAKE] %s wake=%r aliases=%r heard=%r",
-                "ADDRESSED" if addressed else "GATED (no response sent)",
-                self._settings.wake_word,
-                self._settings.wake_word_aliases,
-                self._utterance_text.strip()[:200],
-            )
-            if not addressed:
-                self._turn_gated = True
-                return True
+        if has_model_output:
+            return self._evaluate_wake_gate_if_needed()
         return False
 
     def _reset_wake_gate(self) -> None:
@@ -680,19 +781,27 @@ class LiveSession:
                         if server_content.interrupted and self._speaker is not None:
                             self._speaker.flush()
 
-                        events = self._turn_state.consume_server_content(server_content)
+                        # Extended Thinking can set turn_complete at the end of
+                        # each spoken filler while background reasoning continues.
+                        # Keep those chunks in TurnState until interaction_status
+                        # returns to IDLE so they are persisted as one response.
+                        turn_state_content = _turn_state_content(
+                            self._settings.model, server_content
+                        )
+                        events = self._turn_state.consume_server_content(
+                            turn_state_content
+                        )
                         for event in events:
                             if (
                                 gated
                                 and isinstance(event, (PartialTranscript, TurnComplete))
-                                and event.source == TranscriptSource.MODEL
                             ):
-                                continue  # gated turn: no agent transcript bubble
+                                continue  # gated turn: drop bubbles and persistence
                             await self._emit(event)
                             if isinstance(event, TurnComplete):
                                 completed_at = datetime.now(UTC).isoformat()
                                 unique_id = (
-                                    f"{self._run_id}-{self._epoch}-{event.turn_id}"
+                                    f"{self._run_id}-{self._epoch}-{event.source.value}-{event.turn_id}"
                                 )
                                 self._store.append_turn(
                                     unique_id,
@@ -716,10 +825,6 @@ class LiveSession:
                                 if inline_data and inline_data.data:
                                     self._speaker.write(inline_data.data)
 
-                        if server_content.turn_complete or server_content.interrupted:
-                            self._reset_wake_gate()
-                            self._frame_sent_this_utterance = False
-
                     # Tool calls are handled off the receive path so approvals and
                     # blocking operations cannot stall message handling. A gated
                     # (unaddressed) turn must never dispatch tools.
@@ -732,24 +837,45 @@ class LiveSession:
                     # responses carry ``scheduling`` (WHEN_IDLE/SILENT) so the
                     # server folds results in without hijacking the turn.
                     tool_call = response.tool_call
-                    if tool_call and tool_call.function_calls and not self._turn_gated:
-                        for fc in tool_call.function_calls:
-                            if self._dispatcher is not None:
-                                # Tracked by the dispatcher, not by this
-                                # session: the call must outlive a dropped
-                                # socket so its result reaches whichever
-                                # session is connected when it finishes.
-                                self._dispatcher.spawn(
-                                    self._dispatcher.submit(
-                                        fc.id,
-                                        fc.name,
-                                        fc.args or {},
-                                    )
+                    if tool_call and tool_call.function_calls:
+                        if self._utterance_text and self._evaluate_wake_gate_if_needed():
+                            if self._speaker is not None:
+                                self._speaker.flush()
+                            await self._emit(
+                                SessionError(
+                                    message=(
+                                        "Ignored utterance: wake-word gate dropped turn "
+                                        f"(wake={self._settings.wake_word!r})"
+                                    ),
+                                    fatal=False,
                                 )
+                            )
+                        if not self._turn_gated:
+                            for fc in tool_call.function_calls:
+                                if self._dispatcher is not None:
+                                    # Tracked by the dispatcher, not by this
+                                    # session: the call must outlive a dropped
+                                    # socket so its result reaches whichever
+                                    # session is connected when it finishes.
+                                    self._dispatcher.spawn(
+                                        self._dispatcher.submit(
+                                            fc.id,
+                                            fc.name,
+                                            fc.args or {},
+                                        )
+                                    )
 
                     cancellation = response.tool_call_cancellation
                     if cancellation and self._dispatcher is not None:
                         self._dispatcher.cancel(cancellation.ids or [])
+
+                    # Turn boundaries must only reset gating state after tool calls
+                    # in the same response message have been evaluated and dispatched.
+                    if server_content and _should_reset_turn_gate(
+                        self._settings.model, server_content
+                    ):
+                        self._reset_wake_gate()
+                        self._frame_sent_this_utterance = False
 
                     usage = response.usage_metadata
                     if usage:
@@ -864,6 +990,28 @@ class LiveSession:
                             logger.warning("audio_stream_end send failed: %s", exc)
 
                 elif isinstance(cmd, SetShareScreen):
+                    if (
+                        cmd.monitor is not None
+                        and cmd.monitor != self._screen_monitor
+                    ):
+                        try:
+                            if self._screen is not None:
+                                await self._screen.set_monitor(cmd.monitor)
+                            else:
+                                await asyncio.to_thread(validate_monitor, cmd.monitor)
+                        except Exception as exc:
+                            await self._emit(
+                                SessionError(
+                                    message=f"Could not select screen monitor {cmd.monitor}: {exc}",
+                                    fatal=False,
+                                )
+                            )
+                        else:
+                            self._screen_monitor = cmd.monitor
+                            computer_tools.set_monitor(cmd.monitor)
+                            self._last_frame_sent = 0.0
+                            self._last_frame_digest = None
+
                     if not cmd.enabled and self._settings.computer_use_enabled:
                         logger.warning(
                             "[SCREEN] Ignoring SetShareScreen(False) because "
@@ -888,9 +1036,7 @@ class LiveSession:
                         elif self._screen is None:
                             self._screen = ScreenCapture(
                                 fps=self._settings.screen_fps,
-                                monitor=cmd.monitor
-                                if cmd.monitor is not None
-                                else self._settings.screen_monitor,
+                                monitor=self._screen_monitor,
                             )
                             self._owns_screen = True
                             await self._screen.start()
@@ -1072,7 +1218,9 @@ class LiveSession:
                         id=call_id,
                         name=name,
                         response={"result": result.message},
-                        scheduling=_response_scheduling_for(name),
+                        scheduling=_response_scheduling_for(
+                            name, self._settings.model
+                        ),
                     )
                 ]
             )
@@ -1093,26 +1241,27 @@ class LiveSession:
         and it must not be lost because a heartbeat happened to fire just
         before it.
         """
-        now = time.monotonic()
-        if (
-            not force
-            and now - self._last_frame_sent < self._settings.frame_min_interval_seconds
-        ):
-            return False
+        async with self._frame_lock:
+            now = time.monotonic()
+            if (
+                not force
+                and now - self._last_frame_sent < self._settings.frame_min_interval_seconds
+            ):
+                return False
 
-        frame = await asyncio.to_thread(capture_jpeg, self._settings.screen_monitor)
-        digest = hashlib.blake2b(frame, digest_size=16).digest()
-        if not force and digest == self._last_frame_digest:
-            logger.debug("[SCREEN] frame unchanged, not sent (%s)", reason)
-            return False
+            frame = await asyncio.to_thread(capture_jpeg, self._screen_monitor)
+            digest = hashlib.blake2b(frame, digest_size=16).digest()
+            if not force and digest == self._last_frame_digest:
+                logger.debug("[SCREEN] frame unchanged, not sent (%s)", reason)
+                return False
 
-        await session.send_realtime_input(
-            video=types.Blob(data=frame, mime_type="image/jpeg")
-        )
-        self._last_frame_sent = now
-        self._last_frame_digest = digest
-        logger.debug("[SCREEN] frame sent (%s, %d bytes)", reason, len(frame))
-        return True
+            await session.send_realtime_input(
+                video=types.Blob(data=frame, mime_type="image/jpeg")
+            )
+            self._last_frame_sent = now
+            self._last_frame_digest = digest
+            logger.debug("[SCREEN] frame sent (%s, %d bytes)", reason, len(frame))
+            return True
 
     def _spawn_frame(self, session: Any, *, reason: str) -> None:
         """Fire a frame send off the receive loop, ignoring failures."""
@@ -1146,6 +1295,10 @@ class LiveSession:
     def _classify_disconnect(self, exc: BaseException) -> DisconnectReason:
         """Map an exception to a structured disconnect reason."""
         detail = str(exc)
+        if isinstance(exc, ValueError):
+            if detail == "No API key configured":
+                return DisconnectReason("auth_error", detail)
+            return DisconnectReason("invalid_request", detail)
         if isinstance(exc, google.genai.errors.APIError):
             status = getattr(exc, "status", None)
             code = getattr(exc, "code", None)
@@ -1155,6 +1308,11 @@ class LiveSession:
                 return DisconnectReason("not_found", detail)
             if status == "RESOURCE_EXHAUSTED" or code == 429:
                 return DisconnectReason("quota", detail)
+            if (
+                status in ("INVALID_ARGUMENT", "FAILED_PRECONDITION", "UNIMPLEMENTED")
+                or code == 400
+            ):
+                return DisconnectReason("invalid_request", detail)
             if status in ("UNAVAILABLE", "INTERNAL", "DEADLINE_EXCEEDED", "UNKNOWN"):
                 return DisconnectReason("transient", detail)
 
@@ -1245,7 +1403,7 @@ class LiveSession:
                     id=call_id,
                     name=name,
                     response={"result": result.message},
-                    scheduling=_response_scheduling_for(name),
+                    scheduling=_response_scheduling_for(name, self._settings.model),
                 )
             ]
         )
@@ -1258,19 +1416,25 @@ class LiveSession:
     def _record_usage(self, event: UsageUpdate) -> None:
         """Persist non-zero usage modalities as incremental history rows."""
         recorded_at = datetime.now(UTC).isoformat()
-        # The usage table is NOT NULL on usd; unknown (free tier) is 0.0.
-        usd = event.estimated_usd if event.estimated_usd is not None else 0.0
+        input_rate, output_rate = _cost_rates_for_model(self._settings.model)
+        if event.estimated_usd is None or event.estimated_usd == 0.0:
+            prompt_usd = 0.0
+            completion_usd = 0.0
+        else:
+            prompt_usd = (event.prompt_tokens * input_rate) / 1_000_000
+            completion_usd = (event.completion_tokens * output_rate) / 1_000_000
+
         modalities = {
-            "prompt": event.prompt_tokens,
-            "cached": event.cached_tokens,
-            "completion": event.completion_tokens,
-            "audio": event.audio_tokens,
-            "video": event.video_tokens,
+            "prompt": (event.prompt_tokens, prompt_usd),
+            "cached": (event.cached_tokens, 0.0),
+            "completion": (event.completion_tokens, completion_usd),
+            "audio": (event.audio_tokens, 0.0),
+            "video": (event.video_tokens, 0.0),
         }
-        for modality, tokens in modalities.items():
+        for modality, (tokens, modality_usd) in modalities.items():
             if tokens:
                 self._store.record_usage(
-                    self._run_id, modality, tokens, usd, recorded_at
+                    self._run_id, modality, tokens, modality_usd, recorded_at
                 )
 
     async def _send_audio_stream_end(self, session: Any) -> None:

@@ -8,7 +8,7 @@ from typing import Any, cast
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 from app.bridge import Bridge
 from app.main_window import MainWindow, _MicState
@@ -378,4 +378,54 @@ def test_theme_stylesheet_and_object_names(
     assert window._tool_container.objectName() == "toolContainer"
     # The central widget must stay transparent so the window gradient shows.
     assert window.centralWidget().objectName() == "centralRoot"
+    window.close()
+
+
+def test_model_picker_has_primary_fallback_and_accepts_custom_ids(
+    qtbot: Any, settings: AppSettings, patched_dirs: None
+) -> None:
+    window = MainWindow(settings)
+    qtbot.addWidget(window)
+
+    assert window._model_combo.isEditable()
+    assert window._model_combo.findData(settings.model) >= 0
+    assert window._model_combo.currentText() == "Gemini 3.1 Flash Live Preview"
+    assert settings.fallback_model is not None
+    assert window._model_combo.findData(settings.fallback_model) >= 0
+    assert window._model_combo.findData("gemini-3.8-live") >= 0
+    assert (
+        window._model_combo.findData("gemini-3.8-live-extended-thinking") >= 0
+    )
+
+    extended_model = "gemini-3.8-live-extended-thinking"
+    window._model_combo.setCurrentIndex(
+        window._model_combo.findData(extended_model)
+    )
+    assert window._build_settings().model == extended_model
+
+    custom_model = "models/custom-live-model"
+    window._model_combo.setCurrentText(custom_model)
+    assert window._build_settings().model == custom_model
+    window.close()
+
+
+def test_settings_can_collapse_and_transcript_can_copy_and_clear(
+    qtbot: Any, settings: AppSettings, patched_dirs: None
+) -> None:
+    window = MainWindow(settings)
+    qtbot.addWidget(window)
+    window.show()
+    qtbot.waitExposed(window)
+
+    window._settings_toggle_btn.setChecked(False)
+    assert not window._settings_widget.isVisible()
+    assert window._settings_toggle_btn.text() == "Show settings"
+
+    window._transcript.setPlainText("[USER] hello\n[MODEL] hi")
+    window._copy_transcript_btn.click()
+    assert "[MODEL] hi" in QApplication.clipboard().text()
+
+    window._clear_transcript_btn.click()
+    assert window._transcript.toPlainText() == ""
+    assert window._last_source is None
     window.close()

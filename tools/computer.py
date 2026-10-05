@@ -95,11 +95,11 @@ def _to_physical(x: int, y: int) -> tuple[int, int]:
     return px, py
 
 
-def _own_window_is_foreground() -> bool:
-    """True when the agent's own window currently has focus (Windows only).
+def _own_window_is_foreground() -> bool | None:
+    """Whether the agent window has focus; None means Windows could not tell.
 
-    Elsewhere this returns False: there is no portable way to ask, and a guard
-    that cannot answer must not block the tools.
+    Non-Windows platforms return False because there is no portable focus API.
+    On Windows, a failed foreground lookup returns None so input can be refused.
     """
     if sys.platform != "win32":
         return False
@@ -109,12 +109,14 @@ def _own_window_is_foreground() -> bool:
         user32 = ctypes.windll.user32
         hwnd = user32.GetForegroundWindow()
         if not hwnd:
-            return False
+            return None
         pid = ctypes.c_ulong()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        thread_id = user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not thread_id or not pid.value:
+            return None
         return int(pid.value) == os.getpid()
     except Exception:  # pragma: no cover - defensive, never block on this
-        return False
+        return None
 
 
 def _self_input_guard() -> ToolResult | None:
@@ -130,7 +132,14 @@ def _self_input_guard() -> ToolResult | None:
     invisible from the model's side, so it is refused with an explanation it
     can act on rather than silently obeyed.
     """
-    if not _own_window_is_foreground():
+    foreground = _own_window_is_foreground()
+    if foreground is None:
+        return ToolResult(
+            False,
+            "Could not verify the foreground window, so computer input was not sent. "
+            "Focus another window and try again.",
+        )
+    if not foreground:
         return None
     return ToolResult(
         False,

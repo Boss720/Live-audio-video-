@@ -77,15 +77,18 @@ class Journal:
 
     def write(self, record: dict[str, Any]) -> None:
         """Write a single JSON Line record, flushing immediately to disk."""
+        from policy.redaction import redact_data
+
         enriched = {
             "run_id": self.run_id,
             "timestamp": self._now_iso(),
-            **record,
+            **redact_data(record),
         }
         line = self._serializer.dumps(enriched)
         f = self._ensure_open()
         f.write(line + "\n")
         f.flush()
+
 
     def tool_attempt(
         self,

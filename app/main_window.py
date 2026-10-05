@@ -75,11 +75,20 @@ from core.events import (
 )
 from media import devices as media_devices
 from obs.logging_setup import get_run_id, setup_logging
-from settings.secrets import get_api_key, set_api_key
-from settings.settings import AppSettings
+from settings.secrets import get_api_key, get_free_api_key, set_api_key
+from settings.settings import AVAILABLE_VOICES, AppSettings
 
-_AVAILABLE_VOICES = ("Puck", "Charon", "Aoede", "Fenrir", "Kore")
+_AVAILABLE_VOICES = AVAILABLE_VOICES
 _MODES = ("text", "voice", "both")
+_MODEL_OPTIONS = (
+    ("Gemini 3.8 Live", "gemini-3.8-live"),
+    ("Gemini 3.8 Live · Extended Thinking", "gemini-3.8-live-extended-thinking"),
+    ("Gemini 3.1 Flash Live Preview", "gemini-3.1-flash-live-preview"),
+    (
+        "Gemini 2.5 Flash Native Audio Preview",
+        "gemini-2.5-flash-native-audio-preview-12-2025",
+    ),
+)
 _METER_INTERVAL_MS = 33
 
 logger = logging.getLogger(__name__)
@@ -207,6 +216,13 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(top_layout)
 
         # Settings panel
+        self._settings_toggle_btn = QPushButton("Hide settings")
+        self._settings_toggle_btn.setCheckable(True)
+        self._settings_toggle_btn.setChecked(True)
+        self._settings_toggle_btn.setAccessibleName("Show or hide settings")
+        self._settings_toggle_btn.toggled.connect(self._toggle_settings_panel)
+        main_layout.addWidget(self._settings_toggle_btn)
+
         self._settings_widget = QWidget()
         self._settings_widget.setObjectName("glassPanel")
         apply_glass_shadow(self._settings_widget)
@@ -215,9 +231,22 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self._settings_widget)
 
         row = 0
-        self._model_edit = QLineEdit()
+        self._model_combo = QComboBox()
+        self._model_combo.setEditable(True)
+        self._model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._model_combo.setAccessibleName("Gemini Live model")
+        self._model_combo.setToolTip(
+            "Choose a configured model or enter a custom Gemini Live model ID."
+        )
+        for label, model in _MODEL_OPTIONS:
+            self._model_combo.addItem(label, model)
+        for model in dict.fromkeys(
+            (self._settings.model, self._settings.fallback_model or "")
+        ):
+            if model and self._model_combo.findData(model) < 0:
+                self._model_combo.addItem(model, model)
         settings_layout.addWidget(QLabel("Model:"), row, 0)
-        settings_layout.addWidget(self._model_edit, row, 1)
+        settings_layout.addWidget(self._model_combo, row, 1)
 
         row += 1
         self._voice_combo = QComboBox()
@@ -328,7 +357,20 @@ class MainWindow(QMainWindow):
         self._transcript.setReadOnly(True)
         self._transcript.setPlaceholderText("Transcript will appear here...")
         self._transcript.setAccessibleName("Conversation transcript")
-        self._tabs.addTab(self._transcript, "Transcript")
+        transcript_page = QWidget()
+        transcript_layout = QVBoxLayout(transcript_page)
+        transcript_layout.setContentsMargins(0, 0, 0, 0)
+        transcript_actions = QHBoxLayout()
+        self._copy_transcript_btn = QPushButton("Copy transcript")
+        self._copy_transcript_btn.clicked.connect(self._copy_transcript)
+        self._clear_transcript_btn = QPushButton("Clear transcript")
+        self._clear_transcript_btn.clicked.connect(self._clear_transcript)
+        transcript_actions.addStretch()
+        transcript_actions.addWidget(self._copy_transcript_btn)
+        transcript_actions.addWidget(self._clear_transcript_btn)
+        transcript_layout.addLayout(transcript_actions)
+        transcript_layout.addWidget(self._transcript)
+        self._tabs.addTab(transcript_page, "Transcript")
 
         self._activity = QListWidget()
         self._activity.setAccessibleName("Activity feed")
@@ -420,7 +462,11 @@ class MainWindow(QMainWindow):
 
     def _load_settings_to_ui(self) -> None:
         """Populate controls from the initial AppSettings."""
-        self._model_edit.setText(self._settings.model)
+        model_index = self._model_combo.findData(self._settings.model)
+        if model_index >= 0:
+            self._model_combo.setCurrentIndex(model_index)
+        else:
+            self._model_combo.setEditText(self._settings.model)
         self._voice_combo.setCurrentText(self._settings.voice)
         self._mode_combo.setCurrentText(self._settings.mode.title())
         self._share_screen_check.setChecked(self._settings.share_screen)
@@ -440,27 +486,43 @@ class MainWindow(QMainWindow):
     # -- Settings handling --
 
     def _build_settings(self) -> AppSettings:
-        """Construct a validated AppSettings from the current UI values."""
+        """Construct a validated AppSettings from the current UI values.
+
+        Preserves loaded hidden settings.
+        """
         working_dir = Path(self._working_dir_edit.text().strip() or ".")
-        return AppSettings(
-            model=self._model_edit.text().strip(),
-            voice=self._voice_combo.currentText(),
-            mode=self._mode_combo.currentText().lower(),
-            working_dir=working_dir,
-            workspace_root=working_dir,
-            share_screen=self._share_screen_check.isChecked(),
-            screen_fps=self._fps_spin.value(),
-            computer_use_enabled=self._computer_use_check.isChecked(),
-            input_device=self._input_device_combo.currentData(),
-            output_device=self._output_device_combo.currentData(),
-            yolo=self._yolo_check.isChecked(),
-            minimize_to_tray=self._tray_check.isChecked(),
-            system_prompt=self._system_prompt_edit.toPlainText().strip(),
-            wake_word_enabled=self._wake_word_check.isChecked(),
-            wake_word=self._wake_word_edit.text().strip() or "Bongo",
-            headless=False,
-            debug=self._settings.debug,
+        model_index = self._model_combo.currentIndex()
+        model_text = self._model_combo.currentText().strip()
+        model = (
+            self._model_combo.currentData()
+            if model_index >= 0
+            and model_text == self._model_combo.itemText(model_index)
+            else model_text
         )
+        updates: dict[str, Any] = {
+            "model": model,
+            "voice": self._voice_combo.currentText(),
+            "mode": self._mode_combo.currentText().lower(),
+            "working_dir": working_dir,
+            "workspace_root": working_dir,
+            "share_screen": self._share_screen_check.isChecked(),
+            "screen_fps": self._fps_spin.value(),
+            "computer_use_enabled": self._computer_use_check.isChecked(),
+            "input_device": self._input_device_combo.currentData(),
+            "output_device": self._output_device_combo.currentData(),
+            "yolo": self._yolo_check.isChecked(),
+            "minimize_to_tray": self._tray_check.isChecked(),
+            "system_prompt": self._system_prompt_edit.toPlainText().strip(),
+            "wake_word_enabled": self._wake_word_check.isChecked(),
+            "wake_word": self._wake_word_edit.text().strip() or "Bongo",
+            "headless": False,
+            "debug": self._settings.debug,
+        }
+        dumped = self._settings.model_dump()
+        dumped.update(updates)
+        new_settings = AppSettings.model_validate(dumped)
+        self._settings = new_settings
+        return new_settings
 
     @Slot()
     def _on_save_settings(self) -> None:
@@ -478,6 +540,25 @@ class MainWindow(QMainWindow):
         )
         if path:
             self._working_dir_edit.setText(path)
+
+    @Slot(bool)
+    def _toggle_settings_panel(self, expanded: bool) -> None:
+        self._settings_widget.setVisible(expanded)
+        self._settings_toggle_btn.setText(
+            "Hide settings" if expanded else "Show settings"
+        )
+
+    @Slot()
+    def _copy_transcript(self) -> None:
+        text = self._transcript.toPlainText()
+        if text:
+            QApplication.clipboard().setText(text)
+            self._add_activity("Transcript copied to clipboard")
+
+    @Slot()
+    def _clear_transcript(self) -> None:
+        self._transcript.clear()
+        self._last_source = None
 
     # -- System tray --
 
@@ -535,6 +616,8 @@ class MainWindow(QMainWindow):
         parts.append(detail)
         if event.estimated_usd:
             parts.append(f"~${event.estimated_usd:.4f}")
+        else:
+            parts.append("Free")
         self._usage_label.setText("  ·  ".join(parts))
         self._usage_label.setToolTip(
             f"audio {event.audio_tokens} · video {event.video_tokens}"
@@ -623,7 +706,7 @@ class MainWindow(QMainWindow):
 
     # -- Event handling --
 
-    @Slot(object)
+    @Slot(object)  # PySide's stub loses AgentEvent unions.
     def _on_event(self, event: AgentEvent) -> None:
         if isinstance(event, ConnectionStateChanged):
             self._status_label.setText(event.state.value)
@@ -815,11 +898,20 @@ def run_gui(settings: AppSettings) -> int:
     app = QApplication(sys.argv)
     app.setStyleSheet(MAIN_QSS)
 
-    if get_api_key() is None:
+    has_tier1 = get_api_key() is not None or settings.api_key_tier1 is not None
+    has_free = get_free_api_key() is not None or settings.api_key_free is not None
+    needs_key = not has_tier1 and (settings.privacy_mode == "strict" or not has_free)
+
+    if needs_key:
+        prompt = (
+            "Strict privacy requires a Tier 1 API key. Enter your Tier 1 API key:"
+            if settings.privacy_mode == "strict"
+            else "No Google API key found. Enter your API key:"
+        )
         key, ok = QInputDialog.getText(
-            None,
+            None,  # The startup dialog intentionally has no parent.
             "API key required",
-            "No Google API key found. Enter your API key:",
+            prompt,
             QLineEdit.EchoMode.Password,
         )
         if not ok or not key:

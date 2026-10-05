@@ -18,6 +18,7 @@ from pathlib import Path
 
 from headless import run_headless
 from settings import (
+    AVAILABLE_VOICES,
     AppSettings,
     get_api_key,
     get_free_api_key,
@@ -25,7 +26,6 @@ from settings import (
     set_api_key,
 )
 
-AVAILABLE_VOICES = ("Puck", "Charon", "Aoede", "Fenrir", "Kore")
 DEFAULT_MODEL = "gemini-3.1-flash-live-preview"
 DEFAULT_VOICE = "Puck"
 
@@ -187,7 +187,9 @@ def main() -> int:
     args = parse_args()
 
     migrate_dotenv()
-    if args.headless and get_api_key() is None:
+    has_tier1 = get_api_key() is not None
+    has_free = get_free_api_key() is not None
+    if args.headless and not has_tier1 and not has_free:
         _prompt_for_api_key()
 
     working_dir = _resolve_working_dir(args.working_dir)

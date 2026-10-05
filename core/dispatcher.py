@@ -26,7 +26,7 @@ from core.events import (
     ToolResultSent,
 )
 from persist.store import Store
-from policy import PolicyEngine, redact
+from policy import PolicyEngine, redact, redact_data
 from policy.engine import DecisionKind
 from tools.registry import (
     ComputerClickArgs,
@@ -182,9 +182,10 @@ class ToolDispatcher:
         if self._consume_cancellation(call_id):
             return
 
-        self._call_args[call_id] = args
-        self._journal.tool_attempt(call_id, name, args, epoch=self._epoch)
-        await self._emit(ToolCallReceived(call_id=call_id, name=name, args=args))
+        clean_args = redact_data(args)
+        self._call_args[call_id] = clean_args
+        self._journal.tool_attempt(call_id, name, clean_args, epoch=self._epoch)
+        await self._emit(ToolCallReceived(call_id=call_id, name=name, args=clean_args))
 
         # Resolve the tool implementation and argument schema.
         entry = _TOOL_TABLE.get(name)
@@ -199,7 +200,8 @@ class ToolDispatcher:
         try:
             validated_args = schema.model_validate(args)
         except Exception as exc:  # pydantic.ValidationError
-            result = ToolResult(False, f"Invalid arguments for {name}: {exc}")
+            safe_err = redact(str(exc))
+            result = ToolResult(False, f"Invalid arguments for {name}: {safe_err}")
             await self._finish(call_id, name, result)
             return
 
@@ -208,7 +210,7 @@ class ToolDispatcher:
         decision = self._policy.evaluate(name, validated_args)
 
         if decision.kind == DecisionKind.DENY:
-            result = ToolResult(False, f"Policy denied: {decision.reason}")
+            result = ToolResult(False, f"Policy denied: {redact(decision.reason)}")
             await self._finish(call_id, name, result)
             return
 
@@ -217,8 +219,8 @@ class ToolDispatcher:
                 ToolApprovalRequested(
                     call_id=call_id,
                     name=name,
-                    args=args,
-                    allow_text=decision.reason,
+                    args=clean_args,
+                    allow_text=redact(decision.reason),
                 )
             )
             approved = await self._wait_for_approval(call_id)

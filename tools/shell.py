@@ -32,6 +32,21 @@ def _truncate(text: str, limit: int) -> str:
     return text
 
 
+def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
+    """Safely terminate a process and all its child processes."""
+    if sys.platform == "win32":
+        import subprocess
+
+        with contextlib.suppress(Exception):
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                check=False,
+            )
+    with contextlib.suppress(ProcessLookupError, OSError):
+        proc.kill()
+
+
 async def run_command(args: RunCommandArgs, *, call_id: str = "") -> ToolResult:
     """Run a PowerShell command (Windows) or shell command (other platforms)."""
     decision = _state._policy.evaluate("run_command", args)
@@ -80,8 +95,9 @@ async def run_command(args: RunCommandArgs, *, call_id: str = "") -> ToolResult:
                 proc.communicate(), timeout=timeout
             )
         except TimeoutError:
-            proc.kill()
-            await proc.communicate()
+            _kill_process_tree(proc)
+            with contextlib.suppress(Exception):
+                await proc.communicate()
             return ToolResult(
                 False,
                 f"Error: Command timed out after {timeout}s.\nCommand: {args.command}",
@@ -100,11 +116,12 @@ async def run_command(args: RunCommandArgs, *, call_id: str = "") -> ToolResult:
         if stderr:
             parts.append(f"[stderr]\n{_truncate(stderr, MAX_CMD_BYTES)}")
 
+        is_ok = proc.returncode == 0
         exit_info = f"[exit code: {proc.returncode}]"
         if not parts:
-            return ToolResult(True, f"Command completed with no output. {exit_info}")
+            return ToolResult(is_ok, f"Command completed with no output. {exit_info}")
 
-        return ToolResult(True, "\n".join(parts) + f"\n{exit_info}")
+        return ToolResult(is_ok, "\n".join(parts) + f"\n{exit_info}")
     except OSError as exc:
         return ToolResult(False, f"Error executing command: {exc}")
 
@@ -121,6 +138,5 @@ async def cancel_shell(call_id: str) -> bool:
     if proc is None:
         return False
 
-    with contextlib.suppress(ProcessLookupError, OSError):
-        proc.kill()
+    _kill_process_tree(proc)
     return True

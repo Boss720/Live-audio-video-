@@ -93,9 +93,11 @@ class TurnState:
             events.append(SessionError(message="interrupted", fatal=False))
             self._model_text = ""
 
-        # Turn complete: flush and emit the final transcript for the source.
+        # Turn complete: flush and emit the final transcript for the source(s).
         if sc.turn_complete:
             events.extend(self._complete_turn(TranscriptSource.MODEL))
+            if self._pending_user or self._user_text:
+                events.extend(self._complete_turn(TranscriptSource.USER))
 
         events.extend(self._drain_outbox())
         return events
@@ -188,8 +190,7 @@ class TurnState:
                     turn_id=self._turn_id_for(source),
                 )
             )
-
-        self._increment_turn_id(source)
+            self._increment_turn_id(source)
         return events
 
     def _pop_pending(self, source: TranscriptSource) -> str:

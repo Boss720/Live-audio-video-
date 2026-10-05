@@ -2,13 +2,19 @@
 
 ## Current State
 
-- **Repository:** `C:\Users\Hp\projects\gemini-live-agent`
+- **Repository:** `d:/AI/projects/Dev/Projects/gemini-live-agents/gemini-live-agent`
 - **Remote:** `https://github.com/bosscube1/Audio-video-agent-harness.git`
-- **Branch:** `bongo`
-- **Latest commit:** the `feat(dual-tier)` commit at `bongo` HEAD (NOT pushed; local only)
-- **Phases complete:** 1–6 + /goal production fixes (2026-08-01), computer use (2026-08-02), **dual-tier optimization Modules 0–3 (2026-08-05)**
-- **Test suite:** 189 passed, ruff + mypy clean
-- **Next:** Module 4 (GUI tier integration), Module 5 (polish/README), then the deferred follow-ups listed below
+- **Branch:** `Leroy` (HEAD: `5f7eb91`)
+- **Latest milestone:** Complete Codebase Assessment & Improvement Roadmap (2026-10-05)
+- **Test suite:** 260 passed, 3 skipped; strict `mypy` and `ruff` clean across all files.
+- **Completed in this sprint:**
+  - Milestone 1: GUI settings preservation on Save/Connect (`_build_settings`), strict privacy routing, and full 30 voice synchronization (`app/main_window.py`, `settings/settings.py`, `main.py`).
+  - Milestone 2: Shell exit code correctness, Windows subprocess tree termination (`taskkill`), workspace root revocation on switch, symlink escape prevention, secret redaction, and bounded chronological tool history (`tools/shell.py`, `tools/_state.py`, `policy/engine.py`, `policy/redaction.py`, `persist/store.py`, `core/dispatcher.py`, `audit/journal.py`).
+  - Milestone 3: Discrete user turn completion & non-accumulating transcripts, source-qualified turn IDs, wake-gated tool suppression on unaddressed voice responses, serialized screen frame capture with `_frame_lock`, per-modality cost attribution, and Free tier usage `estimated_usd=None` (`core/turn_state.py`, `core/session.py`, `core/supervisor.py`).
+  - Milestone 4: Stdio bridge clean EOF handling, boolean string coercion, and robust mode parsing (`bridge_stdio.py`, `tests/test_bridge_stdio.py`).
+  - Milestone 5: Executable packaging & Windows installer generation (`packaging/gemini-live-agent.spec`, `packaging/installer.iss`, `dist/gemini-live-agent/gemini-live-agent.exe`, `dist/installer/gemini-live-agent-setup-0.2.0.exe`).
+  - Regression Test Suites: `tests/test_lane2_tools_policy_persist.py` and `tests/test_session_wake_tool.py` passing cleanly without resource warnings.
+- **Status:** All core modules, sessions, tools, policies, persistence, GUI, bridges, onedir bundle, and Windows installer fully built and verified.
 
 ## Dual-tier optimization (2026-08-05, Modules 0–3 of 5)
 
@@ -84,7 +90,7 @@ AI Studio dashboard, stored in `core/tier_manager.py`):
   should show "Free"). Pricing table `_COST_PER_MILLION_TOKENS` at
   `core/session.py:71` ($0.15 in / $0.60 out per 1M, prefix-matched).
   **`LiveSession` always computes the paid estimate — nulling it for free-tier
-  sessions is still OPEN (belongs in the supervisor `_EventTap`, Module 4).**
+  sessions was implemented and verified in the supervisor `_EventTap` (`core/supervisor.py:548`).**
 - Tests: `tests/test_session_vad_cost.py` (6).
 
 ### Module 3 — tools & API features (heavily corrected against the live API)

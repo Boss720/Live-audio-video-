@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from google.genai import types
+from google.genai import errors, types
 from pydantic import BaseModel
 
 import core.dispatcher as dispatcher_module
@@ -119,6 +119,55 @@ def _patch_for_supervisor(monkeypatch: Any, live: FakeLive) -> None:
     monkeypatch.setattr("media.devices.list_input_devices", lambda: [])
     monkeypatch.setattr("media.devices.list_output_devices", lambda: [])
     monkeypatch.setattr("core.supervisor.random.uniform", lambda a, b: 0)
+
+
+@pytest.mark.asyncio
+async def test_invalid_setup_request_fails_without_reconnect(
+    settings: AppSettings,
+    command_queue: asyncio.Queue[Any],
+    event_queue: asyncio.Queue[Any],
+    journal: Journal,
+    store: Store,
+    monkeypatch: Any,
+) -> None:
+    live = FakeLive()
+    live.fail_next_connect(
+        errors.APIError(
+            code=400,
+            response_json={
+                "error": {
+                    "code": 400,
+                    "status": "INVALID_ARGUMENT",
+                    "message": "Invalid Live API setup configuration",
+                }
+            },
+        )
+    )
+    _patch_for_supervisor(monkeypatch, live)
+    supervisor = Supervisor(
+        settings=settings,
+        command_queue=command_queue,
+        event_queue=event_queue,
+        journal=journal,
+        store=store,
+        run_id="invalid-setup",
+    )
+
+    reason = await asyncio.wait_for(supervisor.run(), timeout=2)
+
+    assert reason.code == "invalid_request"
+    assert live.sessions == []
+    events = await drain(event_queue)
+    assert any(
+        isinstance(event, ConnectionStateChanged)
+        and event.state == ConnectionState.FAILED
+        for event in events
+    )
+    assert not any(
+        isinstance(event, ConnectionStateChanged)
+        and event.state == ConnectionState.RECONNECTING
+        for event in events
+    )
 
 
 @pytest.mark.asyncio

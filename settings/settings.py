@@ -48,10 +48,11 @@ _AVAILABLE_VOICES = (
     "Sadaltager",
     "Sulafat",
 )
+AVAILABLE_VOICES = _AVAILABLE_VOICES
 _MODES = ("text", "voice", "both")
 _PRIVACY_MODES = ("strict", "relaxed", "auto")
 _MEDIA_RESOLUTIONS = ("low", "high")
-_THINKING_LEVELS = ("minimal", "medium", "high")
+_THINKING_LEVELS = ("minimal", "low", "medium", "high")
 _FRAME_MODES = ("on_demand", "stream")
 _TURN_COVERAGES: dict[str, types.TurnCoverage | None] = {
     "default": None,
@@ -314,7 +315,7 @@ class AppSettings(BaseSettings):
     media_resolution: str = "high"  # low, high
     enable_affective_dialog: bool = True
     # "medium" is the default: "minimal" caused failed multi-step tasks.
-    thinking_level: str = "medium"  # minimal, medium, high
+    thinking_level: str = "medium"  # minimal, low, medium, high
     google_search_enabled: bool = True
 
     @field_validator("voice")

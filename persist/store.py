@@ -197,8 +197,12 @@ class Store:
         epoch: int,
     ) -> None:
         """Persist a tool call and its result."""
-        completed_at = self._utc_now_iso() if result is not None else None
-        result_json = self._json.dumps(result) if result is not None else None
+        from policy.redaction import redact_data
+
+        clean_args = redact_data(args)
+        clean_result = redact_data(result) if result is not None else None
+        completed_at = self._utc_now_iso() if clean_result is not None else None
+        result_json = self._json.dumps(clean_result) if clean_result is not None else None
         with self._conn:
             self._conn.execute(
                 """
@@ -211,7 +215,7 @@ class Store:
                     run_id,
                     turn_id,
                     name,
-                    self._json.dumps(args),
+                    self._json.dumps(clean_args),
                     result_json,
                     int(ok),
                     int(orphaned),
@@ -219,6 +223,7 @@ class Store:
                     completed_at,
                 ),
             )
+
 
     def record_usage(
         self,
@@ -354,10 +359,14 @@ class Store:
         rows = self._conn.execute(
             """
             SELECT id, name, ok, result, epoch
-            FROM tool_calls
-            WHERE run_id = ? AND result IS NOT NULL
-            ORDER BY completed_at ASC
-            LIMIT ?
+            FROM (
+                SELECT id, name, ok, result, epoch, completed_at, rowid
+                FROM tool_calls
+                WHERE run_id = ? AND result IS NOT NULL
+                ORDER BY completed_at DESC, rowid DESC
+                LIMIT ?
+            )
+            ORDER BY completed_at ASC, rowid ASC
             """,
             (run_id, limit),
         ).fetchall()
@@ -365,4 +374,3 @@ class Store:
             (row["id"], row["name"], bool(row["ok"]), row["result"], row["epoch"])
             for row in rows
         ]
-

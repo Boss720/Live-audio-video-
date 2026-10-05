@@ -21,7 +21,7 @@ import pytest
 from google.genai import types
 
 from audit.journal import Journal
-from core.commands import Disconnect
+from core.commands import Disconnect, SetShareScreen
 from core.events import ConnectionState, ConnectionStateChanged, UsageUpdate
 from core.session import LiveSession, _modality_name
 from persist.store import Store
@@ -328,3 +328,60 @@ async def test_on_demand_mode_starts_no_capture_thread(
         journal.close()
 
     assert constructed is False
+
+
+@pytest.mark.asyncio
+async def test_set_share_screen_monitor_is_used_for_on_demand_frames(
+    settings: AppSettings, tmp_path: Path, monkeypatch: Any
+) -> None:
+    settings.share_screen = False
+    settings.computer_use_enabled = False
+    settings.frame_mode = "on_demand"
+    settings.frame_heartbeat_seconds = 0.01
+    settings.frame_min_interval_seconds = 0.0
+    live = FakeLive()
+    _patch_common(monkeypatch, live)
+
+    captured_monitors: list[int] = []
+    selected_monitors: list[int] = []
+    monkeypatch.setattr("core.session.validate_monitor", lambda _monitor: None)
+    monkeypatch.setattr(
+        "core.session.computer_tools.set_monitor", selected_monitors.append
+    )
+
+    def capture(monitor: int = 1, **_kwargs: Any) -> bytes:
+        captured_monitors.append(monitor)
+        return b"frame"
+
+    monkeypatch.setattr(
+        "core.session.capture_jpeg", capture
+    )
+
+    session, command_queue, event_queue, journal = _make_session(settings, tmp_path)
+    await command_queue.put(SetShareScreen(enabled=True, monitor=2))
+    runner = asyncio.create_task(session.run())
+    try:
+        await _wait_live(event_queue)
+        fake_session = live.latest_session
+        assert fake_session is not None
+
+        sent_frame = False
+        for _ in range(100):
+            outgoing = fake_session.pop_outbox()
+            if any(
+                isinstance(message, types.LiveClientRealtimeInput)
+                and message.video is not None
+                for message in outgoing
+            ):
+                sent_frame = True
+                break
+            await asyncio.sleep(0.01)
+
+        assert sent_frame
+        assert captured_monitors[0] == 2
+        assert selected_monitors[-1] == 2
+    finally:
+        await command_queue.put(Disconnect())
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(runner, timeout=5)
+        journal.close()

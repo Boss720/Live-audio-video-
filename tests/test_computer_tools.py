@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from google.genai import types
+from pydantic import ValidationError
 
 from app.main_window import MainWindow
 from audit.journal import Journal
@@ -88,6 +89,11 @@ class _FakePyAutoGUI:
 
 
 FAKE_GEOMETRY = {"left": 100, "top": 50, "width": 1921, "height": 1081}
+
+
+@pytest.fixture(autouse=True)
+def mock_not_foreground(monkeypatch: Any) -> None:
+    monkeypatch.setattr(computer, "_own_window_is_foreground", lambda: False)
 
 
 @pytest.fixture
@@ -196,6 +202,15 @@ def test_scroll_invalid_direction(fake_gui: _FakePyAutoGUI) -> None:
     result = computer.scroll(ComputerScrollArgs.model_validate({"direction": "sideways"}))
     assert result.ok is False
     assert fake_gui.calls == []
+
+
+@pytest.mark.parametrize(
+    "partial_position",
+    [{"x": 500}, {"y": 500}],
+)
+def test_scroll_rejects_a_partial_position(partial_position: dict[str, int]) -> None:
+    with pytest.raises(ValidationError, match="x and y must be provided together"):
+        ComputerScrollArgs.model_validate({"direction": "down", **partial_position})
 
 
 def test_failsafe_returns_error(monkeypatch: Any) -> None:
@@ -551,3 +566,15 @@ def test_guard_is_inert_off_windows(monkeypatch: Any) -> None:
     """No portable way to ask, so the guard must not block on other platforms."""
     monkeypatch.setattr(sys, "platform", "linux")
     assert computer._own_window_is_foreground() is False
+
+
+def test_unknown_foreground_window_blocks_computer_input(
+    fake_gui: _FakePyAutoGUI, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(computer, "_own_window_is_foreground", lambda: None)
+
+    result = computer.key_press(ComputerKeyArgs(keys="enter"))
+
+    assert result.ok is False
+    assert "could not verify the foreground window" in result.message.lower()
+    assert fake_gui.calls == []

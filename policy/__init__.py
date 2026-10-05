@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from core.commands import GatingMode
 from policy.engine import Decision, PathDeniedError, PolicyEngine
-from policy.redaction import redact
+from policy.redaction import redact, redact_data
 
 __all__ = [
     "Decision",
@@ -12,4 +12,5 @@ __all__ = [
     "PathDeniedError",
     "PolicyEngine",
     "redact",
+    "redact_data",
 ]

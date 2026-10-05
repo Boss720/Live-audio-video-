@@ -47,6 +47,20 @@ def _resolve_monitor(sct: Any, monitor: int) -> dict[str, Any]:
     return dict(monitors[1] if len(monitors) > 1 else monitors[0])
 
 
+def validate_monitor(monitor: int) -> dict[str, Any]:
+    """Validate a monitor index and return its MSS region."""
+    import mss
+
+    with _mss_factory(mss)() as sct:
+        count = len(sct.monitors) - 1  # index 0 is the virtual "all monitors"
+        if monitor < 0 or monitor > count:
+            raise ValueError(
+                f"Monitor {monitor} does not exist "
+                f"(available: 0 for all, 1-{count} for individual screens)"
+            )
+        return dict(sct.monitors[monitor])
+
+
 def monitor_geometry(monitor: int = 1) -> dict[str, int]:
     """Return ``{"left", "top", "width", "height"}`` for a monitor in pixels.
 
@@ -122,17 +136,8 @@ class ScreenCapture:
 
     async def start(self) -> None:
         """Begin capturing the screen."""
-        import mss  # imported here so --help works without the dependency
-
-        # Validate the monitor index up front rather than failing per-frame
-        with _mss_factory(mss)() as sct:
-            count = len(sct.monitors) - 1  # index 0 is the virtual "all monitors"
-            if self.monitor < 0 or self.monitor > count:
-                raise ValueError(
-                    f"Monitor {self.monitor} does not exist "
-                    f"(available: 0 for all, 1-{count} for individual screens)"
-                )
-            region = sct.monitors[self.monitor]
+        # Validate the monitor index up front rather than failing per-frame.
+        region = validate_monitor(self.monitor)
 
         self._loop = asyncio.get_running_loop()
         self._running = True
@@ -144,6 +149,18 @@ class ScreenCapture:
             region["width"],
             region["height"],
             self.fps,
+        )
+
+    async def set_monitor(self, monitor: int) -> None:
+        """Switch the active capture and discard any queued frame from the old monitor."""
+        region = await asyncio.to_thread(validate_monitor, monitor)
+        self.monitor = monitor
+        self._discard_pending_frame()
+        logger.info(
+            "[SCREEN] Switched to monitor %d (%dx%d)",
+            monitor,
+            region["width"],
+            region["height"],
         )
 
     async def read_frame(self) -> bytes:
@@ -173,8 +190,12 @@ class ScreenCapture:
         interval = 1.0 / self.fps if self.fps > 0 else 1.0
 
         with _mss_factory(mss)() as sct:
-            region = sct.monitors[self.monitor]
+            selected_monitor = self.monitor
+            region = sct.monitors[selected_monitor]
             while self._running:
+                if self.monitor != selected_monitor:
+                    selected_monitor = self.monitor
+                    region = sct.monitors[selected_monitor]
                 started = time.monotonic()
                 try:
                     shot = sct.grab(region)
@@ -190,7 +211,8 @@ class ScreenCapture:
 
                     buffer = io.BytesIO()
                     image.save(buffer, format="JPEG", quality=self.quality)
-                    self._publish(buffer.getvalue())
+                    if self.monitor == selected_monitor:
+                        self._publish(buffer.getvalue())
                 except Exception as exc:
                     logger.warning("Screen capture error: %s", exc)
 
@@ -221,3 +243,8 @@ class ScreenCapture:
             with contextlib.suppress(asyncio.QueueEmpty):
                 self._queue.get_nowait()
         self._queue.put_nowait(None)
+
+    def _discard_pending_frame(self) -> None:
+        """Drop a frame captured from the previous monitor selection."""
+        with contextlib.suppress(asyncio.QueueEmpty):
+            self._queue.get_nowait()
