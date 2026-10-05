@@ -81,6 +81,7 @@ _POST_ACTION_SETTLE_SECONDS = 0.15
 _COST_PER_MILLION_TOKENS: dict[str, tuple[float, float]] = {
     "gemini-3.1-flash-live-preview": (0.15, 0.60),
     "gemini-2.5-flash-native-audio": (0.15, 0.60),
+    "gemini-3.8-live": (0.75, 3.75),
 }
 _DEFAULT_COST_PER_MILLION_TOKENS = (0.15, 0.60)
 

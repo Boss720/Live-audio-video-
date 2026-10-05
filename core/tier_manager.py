@@ -76,11 +76,15 @@ class TierManager:
         "gemini-2.5-flash-native-audio-preview-12-2025": ModelTierLimits(tpm_limit=1_000_000),
         "gemini-3.1-flash-live-preview": ModelTierLimits(tpm_limit=150_000),
         "gemini-3.5-live-translate-preview": ModelTierLimits(tpm_limit=100_000),
+        "gemini-3.8-live": ModelTierLimits(tpm_limit=150_000),
+        "gemini-3.8-live-extended-thinking": ModelTierLimits(tpm_limit=150_000),
     }
     FREE_LIMITS: dict[str, ModelTierLimits] = {
         "gemini-2.5-flash-native-audio-preview-12-2025": ModelTierLimits(tpm_limit=1_000_000),
         "gemini-3.1-flash-live-preview": ModelTierLimits(tpm_limit=65_000),
         "gemini-3.5-live-translate-preview": ModelTierLimits(tpm_limit=20_000),
+        "gemini-3.8-live": ModelTierLimits(tpm_limit=65_000),
+        "gemini-3.8-live-extended-thinking": ModelTierLimits(tpm_limit=65_000),
     }
 
     def __init__(
