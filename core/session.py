@@ -157,10 +157,14 @@ def _is_gemini_38_live_model(model: str) -> bool:
 
 
 def _supports_google_search(model: str) -> bool:
-    """Whether the model accepts the Google Search grounding tool."""
-    return model.startswith("gemini-2.5-flash-native-audio") or _is_gemini_38_live_model(
-        model
-    )
+    """Whether the model accepts the Google Search grounding tool.
+
+    Verified live against the API: ``gemini-3.1-flash-live-preview``,
+    ``gemini-3.8-live``, and ``gemini-3.8-live-extended-thinking`` reject
+    google_search at connect time (1011 quota/internal errors); the 2.5
+    native-audio family accepts it.
+    """
+    return model.startswith("gemini-2.5-flash-native-audio")
 
 
 def _supports_affective_dialog(model: str) -> bool:

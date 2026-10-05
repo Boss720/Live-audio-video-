@@ -323,14 +323,14 @@ async def test_google_search_included_only_when_enabled(
     assert all(tool.google_search is None for tool in _typed_tools(config))
 
 
-async def test_gemini_38_live_supports_search_without_thinking_config(
+async def test_gemini_38_live_omits_search_and_thinking_config(
     monkeypatch: Any, settings: AppSettings, tmp_path: Path
 ) -> None:
     settings.model = "gemini-3.8-live"
     settings.google_search_enabled = True
     config = await _connect_config(monkeypatch, settings, tmp_path)
 
-    assert any(tool.google_search is not None for tool in _typed_tools(config))
+    assert all(tool.google_search is None for tool in _typed_tools(config))
     assert config.thinking_config is None
     assert not config.enable_affective_dialog
 
