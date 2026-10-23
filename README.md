@@ -1,3 +1,6 @@
+https://buymeacoffee.com/bosscube194
+
+
 # ✦ Gemini Live Agent
 
 An agentic harness that wraps **Gemini 3.1 Live** (Google's real-time multimodal API) with local computer access — file editing, shell commands, directory browsing, and web search — over a bidirectional WebSocket connection.
