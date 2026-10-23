@@ -232,3 +232,34 @@ focus. These require explicit live validation in a later implementation phase.
   checks. Git still warns that the pre-existing `.pytest-codex-tmp` directory
   is inaccessible.
 
+## Release 0.3.0 publication — 2026-10-23
+
+- Published https://github.com/Boss720/Live-audio-video-/releases/tag/v0.3.0
+  from source commit `63f77b2e87ee4bd47e02ac760a6af86b0cd4aad7` on `Leroy`.
+- Rebuilt the onedir EXE with PyInstaller 6.21.0 and installer with Inno Setup
+  6.7.3. Compared 39 embedded application modules with current source; all
+  matched. EXE SHA-256:
+  `cc1e6541a3f8d5540a5d9165ca0d64fd871f2dd9a5d0fe0c2c702d985797f35a`.
+- Tests: 277 passed, 3 skipped. Mypy passed across 42 source files. Ruff found
+  one existing E501 warning at `settings/settings.py:71`.
+- Packaged `--help` exited 0. Inspected the actual EXE window and both Gemini
+  3.8 model choices through native screenshots and accessibility. Closed the
+  window after checking; the app remained in its configured tray mode.
+- Published installer (53,184,363 bytes), portable ZIP (72,184,616 bytes), and
+  `SHA256SUMS.txt`. Compared all 236 ZIP files with the built bundle. GitHub's
+  asset sizes and SHA-256 digests matched local files before publication.
+- Installer SHA-256:
+  `c3278f80be35924b3286ce66a68829e58de428d3efc170295e1f82f111642439`.
+- Portable ZIP SHA-256:
+  `20c21320b19f369ef78fdf05c689cd260bb97363e075311afdcfdf6ff2de6532`.
+- Confirmed public release state (`draft=false`, `prerelease=false`) and remote
+  tag pointing to the source commit. GitHub initially returned HTTP 500 when
+  publishing without an existing tag; creating the exact tag then publishing
+  succeeded. The prior `origin` remote remains unchanged.
+- Limits included in release notes: no live Gemini session, installation or
+  upgrade/uninstall round trip, or clean-machine check. Settings controls can
+  appear vertically clipped in compact windows.
+- Evidence: `build/release-0.3.0-*.log`, source verification and asset JSON
+  reports under `build/`, and distributables under `dist/release-0.3.0/`.
+- This progress entry is a local audit note; no application source was changed.
+
