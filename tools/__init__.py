@@ -6,12 +6,13 @@ No PySide6 here.
 from __future__ import annotations
 
 from tools._state import set_gating_mode, set_policy, set_workspace
-from tools.fs import delete_file, list_directory, read_file, write_file
+from tools.fs import delete_file, edit_file, list_directory, read_file, write_file
 from tools.registry import (
     ALL_TOOLS,
     CODE_EXECUTION_ENABLED,
     FUNCTION_SCHEDULES,
     DeleteFileArgs,
+    EditFileArgs,
     ListDirectoryArgs,
     ReadFileArgs,
     RunCommandArgs,
@@ -30,6 +31,7 @@ __all__ = [
     "CODE_EXECUTION_ENABLED",
     "FUNCTION_SCHEDULES",
     "DeleteFileArgs",
+    "EditFileArgs",
     "ListDirectoryArgs",
     "ReadFileArgs",
     "RunCommandArgs",
@@ -39,6 +41,7 @@ __all__ = [
     "build_function_declarations",
     "build_tools",
     "delete_file",
+    "edit_file",
     "list_directory",
     "read_file",
     "run_command",

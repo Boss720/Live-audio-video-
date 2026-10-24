@@ -65,14 +65,16 @@ def Deny(reason: str) -> Decision:  # noqa: N802
 _PATH_FIELDS: dict[str, list[str]] = {
     "read_file": ["path"],
     "write_file": ["path"],
+    "edit_file": ["path"],
     "list_directory": ["path"],
     "delete_file": ["path"],
     "run_command": ["working_dir"],
 }
 
-_WRITE_TOOLS = {"write_file", "delete_file"}
+_WRITE_TOOLS = {"write_file", "edit_file", "delete_file"}
 _DESTRUCTIVE_TOOLS = {
     "write_file",
+    "edit_file",
     "delete_file",
     "run_command",
     # Computer-use actions that change the desktop state. ``computer_mouse_move``

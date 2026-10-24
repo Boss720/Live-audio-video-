@@ -139,7 +139,8 @@ class _ToolCard(QFrame):
         layout.setContentsMargins(10, 8, 10, 8)
 
         summaries = {
-            "write_file": "Write a file", "read_file": "Read a file",
+            "write_file": "Write a file", "edit_file": "Edit a file",
+            "read_file": "Read a file",
             "run_command": "Run a command", "list_directory": "List a directory",
             "computer_use": "Control the computer",
         }

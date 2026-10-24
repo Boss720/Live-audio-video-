@@ -9,13 +9,14 @@ import tools._state as _state
 from policy import PathDeniedError
 from tools.registry import (
     DeleteFileArgs,
+    EditFileArgs,
     ListDirectoryArgs,
     ReadFileArgs,
     ToolResult,
     WriteFileArgs,
 )
 
-MAX_READ_BYTES = 16 * 1024  # 16 KB
+MAX_READ_BYTES = 64 * 1024  # 64 KB
 
 
 def _human_size(num_bytes: int) -> str:
@@ -60,10 +61,20 @@ def read_file(args: ReadFileArgs, *, call_id: str = "") -> ToolResult:
         header = f"[{total_lines} lines, {path.stat().st_size} bytes]\n"
 
     content = "".join(selected)
-    if len(content) > MAX_READ_BYTES:
-        content = (
-            content[:MAX_READ_BYTES]
-            + f"\n\n… (truncated — file is {len(content):,} bytes total)"
+    if len(content.encode("utf-8")) > MAX_READ_BYTES:
+        kept: list[str] = []
+        used = 0
+        for line in selected:
+            size = len(line.encode("utf-8"))
+            if used + size > MAX_READ_BYTES and kept:
+                break
+            kept.append(line)
+            used += size
+        content = "".join(kept)[:MAX_READ_BYTES]
+        last = start + len(kept)
+        content += (
+            f"\n\n... (truncated: returned lines {start + 1}-{last} of {end} selected; "
+            f"call read_file again with start_line={last + 1} to continue)"
         )
 
     return ToolResult(True, header + content)
@@ -87,6 +98,47 @@ def write_file(args: WriteFileArgs, *, call_id: str = "") -> ToolResult:
         return ToolResult(True, f"Successfully wrote {len(args.content):,} bytes to {path}")
     except OSError as exc:
         return ToolResult(False, f"Error writing file: {exc}")
+
+
+def edit_file(args: EditFileArgs, *, call_id: str = "") -> ToolResult:
+    """Replace exact text in an existing file."""
+    decision = _state._policy.evaluate("edit_file", args)
+    if decision.is_denied():
+        return ToolResult(False, f"Policy denied: {decision.reason}")
+
+    try:
+        path = _state._policy.resolve_path(args.path, _state._workspace_root, for_write=True)
+    except PathDeniedError as exc:
+        return ToolResult(False, str(exc))
+
+    if not path.is_file():
+        return ToolResult(False, f"Error: Not a file: {path}")
+    if not args.old_text:
+        return ToolResult(False, "Error: old_text must not be empty")
+
+    try:
+        with open(path, encoding="utf-8", newline="") as handle:
+            original = handle.read()
+    except (OSError, UnicodeDecodeError) as exc:
+        return ToolResult(False, f"Error reading file: {exc}")
+
+    count = original.count(args.old_text)
+    if count == 0:
+        return ToolResult(False, f"Error: old_text not found in {path}")
+    if count > 1 and not args.replace_all:
+        return ToolResult(
+            False,
+            f"Error: old_text occurs {count} times in {path}; add surrounding context "
+            "to make it unique or set replace_all=true",
+        )
+
+    updated = original.replace(args.old_text, args.new_text)
+    try:
+        with open(path, "w", encoding="utf-8", newline="") as handle:
+            handle.write(updated)
+    except OSError as exc:
+        return ToolResult(False, f"Error writing file: {exc}")
+    return ToolResult(True, f"Replaced {count} occurrence(s) in {path}")
 
 
 def list_directory(args: ListDirectoryArgs, *, call_id: str = "") -> ToolResult:

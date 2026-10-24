@@ -32,10 +32,10 @@ class ReadFileArgs(BaseModel):
 
     path: str = Field(..., description="Path to the file to read.")
     start_line: int | None = Field(
-        None, description="First line to read (1-indexed, inclusive)."
+        None, ge=1, description="First line to read (1-indexed, inclusive)."
     )
     end_line: int | None = Field(
-        None, description="Last line to read (1-indexed, inclusive)."
+        None, ge=1, description="Last line to read (1-indexed, inclusive)."
     )
 
 
@@ -44,6 +44,20 @@ class WriteFileArgs(BaseModel):
 
     path: str = Field(..., description="Path to the file to write.")
     content: str = Field(..., description="Content to write to the file.")
+
+
+class EditFileArgs(BaseModel):
+    """Arguments for ``edit_file``."""
+
+    path: str = Field(..., description="Path to the existing file to edit.")
+    old_text: str = Field(
+        ..., min_length=1, description="Exact text to find (case- and whitespace-sensitive)."
+    )
+    new_text: str = Field(..., description="Text to replace old_text with.")
+    replace_all: bool = Field(
+        False,
+        description="Replace every occurrence. When false, old_text must occur exactly once.",
+    )
 
 
 class ListDirectoryArgs(BaseModel):
@@ -63,14 +77,17 @@ class DeleteFileArgs(BaseModel):
 class RunCommandArgs(BaseModel):
     """Arguments for ``run_command``."""
 
-    command: str = Field(..., description="The PowerShell command to execute.")
+    command: str = Field(
+        ..., description="The command to execute (PowerShell on Windows, sh elsewhere)."
+    )
     working_dir: str | None = Field(
         None, description="Working directory for the command. Defaults to the workspace root."
     )
     timeout: int = Field(
         30,
         ge=1,
-        description="Maximum time to wait for the command, in seconds (max 300).",
+        le=300,
+        description="Maximum time to wait for the command, in seconds (1-300).",
     )
 
 
@@ -215,8 +232,10 @@ ALL_TOOLS: list[ToolSpec] = [
     ToolSpec(
         name="read_file",
         description=(
-            "Read the contents of a file. Optionally specify start_line and end_line "
-            "(1-indexed, inclusive) to read a specific range of lines."
+            "Read a text file. Optionally specify start_line and end_line "
+            "(1-indexed, inclusive) to read a specific range of lines. Output is "
+            "capped at 64 KB; when truncated, the result states the start_line to "
+            "continue from."
         ),
         args_schema=ReadFileArgs,
         destructive=False,
@@ -225,9 +244,20 @@ ALL_TOOLS: list[ToolSpec] = [
         name="write_file",
         description=(
             "Write content to a file. Creates parent directories if they don't exist. "
-            "Overwrites existing files."
+            "Overwrites existing files. Prefer edit_file for small changes to an "
+            "existing file."
         ),
         args_schema=WriteFileArgs,
+        destructive=True,
+    ),
+    ToolSpec(
+        name="edit_file",
+        description=(
+            "Edit an existing file by exact search and replace: old_text is replaced "
+            "with new_text. Fails if old_text is not found, or if it occurs more than "
+            "once and replace_all is not true. Returns the number of replacements."
+        ),
+        args_schema=EditFileArgs,
         destructive=True,
     ),
     ToolSpec(
@@ -245,8 +275,12 @@ ALL_TOOLS: list[ToolSpec] = [
     ToolSpec(
         name="run_command",
         description=(
-            "Execute a PowerShell command and return its output (stdout + stderr combined). "
-            "Timeout is in seconds (default 30, max 300)."
+            "Execute a command (PowerShell on Windows, sh elsewhere) in the workspace "
+            "or working_dir. No stdin is available (it is closed), so commands cannot "
+            "prompt for input. Output is returned as separate [stdout] and [stderr] "
+            "sections followed by the exit code; long output keeps the head and tail "
+            "with the middle omitted. Timeout is in seconds (default 30, max 300); "
+            "on timeout the command is killed."
         ),
         args_schema=RunCommandArgs,
         destructive=True,
@@ -346,6 +380,7 @@ COMPUTER_TOOL_NAMES: frozenset[str] = frozenset(spec.name for spec in COMPUTER_T
 FUNCTION_SCHEDULES: dict[str, str] = {
     "read_file": "non_blocking_when_idle",
     "write_file": "blocking_interrupt",
+    "edit_file": "blocking_interrupt",
     "list_directory": "non_blocking_when_idle",
     "delete_file": "blocking_interrupt",
     "run_command": "blocking_interrupt",

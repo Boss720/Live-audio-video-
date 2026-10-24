@@ -39,6 +39,7 @@ from tools.registry import (
     ComputerScrollArgs,
     ComputerTypeArgs,
     DeleteFileArgs,
+    EditFileArgs,
     ListDirectoryArgs,
     ReadFileArgs,
     RunCommandArgs,
@@ -58,6 +59,7 @@ _TOOL_TABLE: dict[
 ] = {
     "read_file": (fs_tools.read_file, ReadFileArgs),
     "write_file": (fs_tools.write_file, WriteFileArgs),
+    "edit_file": (fs_tools.edit_file, EditFileArgs),
     "list_directory": (fs_tools.list_directory, ListDirectoryArgs),
     "delete_file": (fs_tools.delete_file, DeleteFileArgs),
     "run_command": (shell_tools.run_command, RunCommandArgs),
