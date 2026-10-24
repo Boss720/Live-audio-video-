@@ -635,6 +635,7 @@ class LiveSession:
                 self._screen = ScreenCapture(
                     fps=self._settings.screen_fps,
                     monitor=self._settings.screen_monitor,
+                    computer_use=self._settings.computer_use_enabled,
                 )
                 await self._screen.start()
 
@@ -1393,6 +1394,7 @@ class LiveSession:
                             self._screen = ScreenCapture(
                                 fps=self._settings.screen_fps,
                                 monitor=self._screen_monitor,
+                                computer_use=self._settings.computer_use_enabled,
                             )
                             self._owns_screen = True
                             await self._screen.start()
@@ -1627,7 +1629,18 @@ class LiveSession:
                 return False
 
             with self._metrics.measure("frame_capture_ms"):
-                frame = await asyncio.to_thread(capture_jpeg, self._screen_monitor)
+                # Pixel digest compare happens inside the capture so an unchanged
+                # screen skips the JPEG encode as well as the send.
+                frame = await asyncio.to_thread(
+                    capture_jpeg,
+                    self._screen_monitor,
+                    prev_digest=None if force else self._last_frame_digest,
+                    computer_use=self._settings.computer_use_enabled,
+                )
+            if getattr(frame, "unchanged", False):
+                self._metrics.increment("frame_duplicates_dropped")
+                logger.debug("[SCREEN] frame checked (%s, sent=False)", reason)
+                return False
             sent = await self._send_frame_bytes(session, frame, force=force)
             logger.debug("[SCREEN] frame checked (%s, sent=%s)", reason, sent)
             return sent
@@ -1636,7 +1649,9 @@ class LiveSession:
         self, session: Any, frame: bytes, *, force: bool = False, refresh: bool = False
     ) -> bool:
         """Send under ``_frame_lock``; commit digest/metrics only after success."""
-        digest = hashlib.blake2b(frame, digest_size=16).digest()
+        digest = getattr(frame, "pixel_digest", None) or hashlib.blake2b(
+            frame, digest_size=16
+        ).digest()
         refresh_due = (
             refresh
             and time.monotonic() - self._last_frame_sent >= self._settings.frame_heartbeat_seconds

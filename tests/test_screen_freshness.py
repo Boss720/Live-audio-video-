@@ -112,7 +112,7 @@ async def test_voice_after_heartbeat_bypasses_floor_but_retries_capture_failure(
     socket = Socket()
     frames = iter([b"heartbeat", RuntimeError("capture unavailable"), b"current"])
 
-    def capture(*_args: Any) -> bytes:
+    def capture(*_args: Any, **_kwargs: Any) -> bytes:
         result = next(frames)
         if isinstance(result, RuntimeError):
             raise result
@@ -145,7 +145,7 @@ async def test_competing_user_requests_capture_once_and_keep_digest_check(
     socket = Socket()
     captures = 0
 
-    def capture(*_args: Any) -> bytes:
+    def capture(*_args: Any, **_kwargs: Any) -> bytes:
         nonlocal captures
         captures += 1
         return b"unchanged"
@@ -239,7 +239,7 @@ async def test_typed_capture_failure_keeps_text_unsent_and_retryable(
     session, commands, events, journal = _make_session(settings_for(tmp_path), tmp_path)
     socket = Socket()
 
-    def unavailable(*_args: Any) -> bytes:
+    def unavailable(*_args: Any, **_kwargs: Any) -> bytes:
         raise RuntimeError("synthetic capture failure")
 
     monkeypatch.setattr("core.session.capture_jpeg", unavailable)
@@ -250,7 +250,7 @@ async def test_typed_capture_failure_keeps_text_unsent_and_retryable(
         assert isinstance(error, SessionError) and "text was not sent" in error.message
         assert socket.texts == []
         assert not session._frame_sent_this_utterance
-        monkeypatch.setattr("core.session.capture_jpeg", lambda *_args: b"current")
+        monkeypatch.setattr("core.session.capture_jpeg", lambda *_args, **_kw: b"current")
         await commands.put(SendText(text="inspect this"))
         await commands.put(Disconnect())
         await asyncio.wait_for(sender, 5)
@@ -269,7 +269,7 @@ async def test_failed_send_does_not_commit_digest_or_metrics(
     monkeypatch: Any,
 ) -> None:
     session, _, _, journal = _make_session(settings_for(tmp_path), tmp_path)
-    monkeypatch.setattr("core.session.capture_jpeg", lambda *_args: b"retry")
+    monkeypatch.setattr("core.session.capture_jpeg", lambda *_args, **_kw: b"retry")
 
     class FailingOnce(Socket):
         failed = False
@@ -305,7 +305,7 @@ async def test_stream_queued_before_requested_capture_does_not_overwrite_it(
         settings_for(tmp_path, frame_mode="stream", screen_deduplicate=True), tmp_path
     )
     socket = Socket()
-    monkeypatch.setattr("core.session.capture_jpeg", lambda *_args: b"current")
+    monkeypatch.setattr("core.session.capture_jpeg", lambda *_args, **_kw: b"current")
     read = asyncio.Event()
 
     class Screen:
@@ -341,7 +341,7 @@ async def test_post_action_forces_unchanged_stream_frame_with_dedup_enabled(
         settings_for(tmp_path, frame_mode="stream", screen_deduplicate=True), tmp_path
     )
     socket = Socket()
-    monkeypatch.setattr("core.session.capture_jpeg", lambda *_args: b"unchanged")
+    monkeypatch.setattr("core.session.capture_jpeg", lambda *_args, **_kw: b"unchanged")
     monkeypatch.setattr("core.session._POST_ACTION_SETTLE_SECONDS", 0)
     try:
         await session._send_frame(socket, reason="heartbeat")

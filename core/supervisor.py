@@ -487,6 +487,7 @@ class Supervisor:
             self._screen = ScreenCapture(
                 fps=self._settings.screen_fps,
                 monitor=self._settings.screen_monitor,
+                computer_use=self._settings.computer_use_enabled,
             )
             await self._screen.start()
 
