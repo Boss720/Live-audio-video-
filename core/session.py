@@ -76,6 +76,15 @@ _METER_INTERVAL_SECONDS = 0.033
 # Time given to the desktop to repaint after a computer-use action before the
 # post-action frame is grabbed.
 _POST_ACTION_SETTLE_SECONDS = 0.15
+# How long a voice tool call that arrives before any input transcription is
+# held while ASR catches up, before it is treated as unaddressed. Public so
+# tests can patch it.
+WAKE_TRANSCRIPTION_WAIT_SECONDS = 0.3
+# FunctionResponse body for tool calls dropped by the wake-word gate. The model
+# must always get an answer, or it waits on the call forever.
+_GATED_TOOL_RESPONSE: dict[str, Any] = {
+    "error": "ignored: user did not address the assistant"
+}
 
 # Per-1M-token pricing (input USD, output USD) for the Live models, keyed by
 # model-name prefix. The session does not know which pricing tier it is
@@ -444,6 +453,19 @@ class LiveSession:
         self._text_turn_pending = False
         self._turn_evaluated = False
         self._turn_gated = False
+        # Post-tool continuation: the model turn that follows a tool response
+        # carries no new user speech, so it inherits the decision of the turn
+        # that issued the call ("addressed" / "gated") until the next input
+        # transcription arrives. Survives ``_reset_wake_gate``.
+        self._continuation: str | None = None
+        self._addressed_call_ids: set[str] = set()
+        # Voice tool calls held while waiting for ASR (see
+        # ``WAKE_TRANSCRIPTION_WAIT_SECONDS``). While calls are held, a turn
+        # boundary defers the gate reset until the decision is made.
+        self._pending_gate_calls: list[Any] = []
+        self._gate_wait_task: asyncio.Task[None] | None = None
+        self._gate_input_changed = asyncio.Event()
+        self._reset_after_gate_decision = False
         self._turn_events: asyncio.Queue[tuple[AgentEvent, float] | None] = asyncio.Queue()
         self._undecided_turn_events: list[AgentEvent] = []
         self._metrics = RuntimeMetrics()
@@ -452,17 +474,15 @@ class LiveSession:
     async def run(self) -> DisconnectReason:
         """Connect to the API, spawn loops, and return when the session ends."""
         try:
-            policy = PolicyEngine(
-                allow_roots=[self._settings.workspace_root],
-                deny_globs=[r"*\.git\*", "__pycache__"],
-                never_allow_regex=[
-                    r"AIza[0-9A-Za-z\-_]{35}",
-                    r"sk-[A-Za-z0-9]{20,}",
-                    r"ghp_[A-Za-z0-9]{36}",
-                ],
-            )
-            set_policy_engine(policy)
-            set_workspace_root(self._settings.workspace_root)
+            # An injected dispatcher belongs to the supervisor, which already
+            # pointed the tool-level policy at that dispatcher's engine and
+            # workspace. Replacing it here would split approvals and tool
+            # checks across two engines with different deny globs.
+            policy: PolicyEngine | None = None
+            if self._owns_dispatcher:
+                policy = self._build_policy()
+                set_policy_engine(policy)
+                set_workspace_root(self._settings.workspace_root)
             computer_tools.set_monitor(self._settings.screen_monitor)
 
             api_key = get_api_key()
@@ -514,11 +534,25 @@ class LiveSession:
             self._session = None
             self._closed = True
 
+    def _build_policy(self) -> PolicyEngine:
+        """Policy for a session that owns its dispatcher."""
+        return PolicyEngine(
+            allow_roots=[self._settings.workspace_root],
+            deny_globs=[r"*\.git\*", "__pycache__"],
+            never_allow_regex=[
+                r"AIza[0-9A-Za-z\-_]{35}",
+                r"sk-[A-Za-z0-9]{20,}",
+                r"ghp_[A-Za-z0-9]{36}",
+            ],
+        )
+
     async def _run_session(
-        self, session: Any, policy: PolicyEngine
+        self, session: Any, policy: PolicyEngine | None
     ) -> DisconnectReason:
         """Start media and the concurrent send/receive loops."""
         if self._dispatcher is None:
+            if policy is None:
+                policy = self._build_policy()
             self._dispatcher = ToolDispatcher(
                 policy=policy,
                 journal=self._journal,
@@ -657,6 +691,12 @@ class LiveSession:
             self._turn_state.flush()  # Cancel timers even when the session is cancelled.
             self._undecided_turn_events.clear()
             self._shutdown_event.set()
+            if self._gate_wait_task is not None and not self._gate_wait_task.done():
+                self._gate_wait_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await self._gate_wait_task
+            self._gate_wait_task = None
+            self._pending_gate_calls.clear()
             for t in list(self._frame_tasks):
                 t.cancel()
             for t in tasks:
@@ -717,14 +757,26 @@ class LiveSession:
             return False
         if not self._turn_evaluated:
             self._turn_evaluated = True
-            addressed = self._text_turn_pending or contains_wake_word(
-                self._utterance_text,
-                self._settings.wake_word,
-                self._settings.wake_word_aliases,
+            self._gate_input_changed.set()
+            if self._text_turn_pending:
+                basis = "typed"
+            elif self._continuation is not None:
+                basis = f"continuation:{self._continuation}"
+            else:
+                basis = "speech"
+            addressed = (
+                self._text_turn_pending
+                or self._continuation == "addressed"
+                or contains_wake_word(
+                    self._utterance_text,
+                    self._settings.wake_word,
+                    self._settings.wake_word_aliases,
+                )
             )
             logger.info(
-                "[WAKE] %s wake=%r aliases=%r heard=%r",
+                "[WAKE] %s (%s) wake=%r aliases=%r heard=%r",
                 "ADDRESSED" if addressed else "GATED (no response sent)",
+                basis,
                 self._settings.wake_word,
                 self._settings.wake_word_aliases,
                 self._utterance_text.strip()[:200],
@@ -749,6 +801,9 @@ class LiveSession:
         input_transcription = server_content.input_transcription
         if input_transcription and input_transcription.text:
             self._utterance_text += input_transcription.text
+            # New user speech ends any inherited post-tool decision.
+            self._continuation = None
+            self._gate_input_changed.set()
 
         has_model_output = bool(
             (server_content.model_turn and server_content.model_turn.parts)
@@ -762,11 +817,157 @@ class LiveSession:
         return False
 
     def _reset_wake_gate(self) -> None:
-        """Clear per-turn gating state at a turn boundary."""
+        """Clear per-turn gating state at a turn boundary.
+
+        ``_continuation`` is deliberately kept: it describes the *next* turn.
+        """
         self._utterance_text = ""
         self._text_turn_pending = False
         self._turn_evaluated = False
         self._turn_gated = False
+        self._reset_after_gate_decision = False
+
+    def _on_turn_boundary_gate(self) -> None:
+        """Reset gating at a turn boundary unless a held tool call is undecided."""
+        if self._pending_gate_calls:
+            # The turn is not over until its tool calls are answered; the
+            # resolver resets once it has decided.
+            self._reset_after_gate_decision = True
+            return
+        self._reset_wake_gate()
+
+    def _needs_transcription_wait(self) -> bool:
+        """Whether a voice tool call must wait for ASR before the gate decides."""
+        return (
+            self._settings.wake_word_enabled
+            and not self._turn_evaluated
+            and not self._text_turn_pending
+            and self._continuation is None
+            and not self._utterance_text.strip()
+        )
+
+    def _wake_word_heard(self) -> bool:
+        return contains_wake_word(
+            self._utterance_text,
+            self._settings.wake_word,
+            self._settings.wake_word_aliases,
+        )
+
+    async def _announce_gate_trigger(self, message: str) -> None:
+        """Stop playback and surface a non-fatal notice for a newly gated turn."""
+        if self._speaker is not None:
+            self._speaker.flush()
+        await self._emit(SessionError(message=message, fatal=False))
+
+    async def _handle_tool_calls(self, session: Any, calls: list[Any]) -> None:
+        """Gate, hold, or dispatch the function calls of one ``tool_call`` message."""
+        if not self._settings.wake_word_enabled:
+            self._dispatch_tool_calls(calls, track=False)
+            return
+        if self._settings.mode == "text" and not self._turn_evaluated:
+            # Text-only sessions send no audio, so no call is voice-originated.
+            self._dispatch_tool_calls(calls, track=True)
+            return
+        if self._pending_gate_calls:
+            # A decision for this turn is already pending; join it.
+            self._pending_gate_calls.extend(calls)
+            return
+        if self._needs_transcription_wait():
+            self._pending_gate_calls.extend(calls)
+            logger.info(
+                "[WAKE] holding %d tool call(s) up to %.0f ms for input transcription",
+                len(calls),
+                WAKE_TRANSCRIPTION_WAIT_SECONDS * 1000,
+            )
+            self._gate_input_changed.clear()
+            self._gate_wait_task = asyncio.create_task(
+                self._await_transcription_then_resolve(session),
+                name="wake_gate_wait",
+            )
+            return
+        await self._decide_and_route(session, calls)
+
+    async def _decide_and_route(self, session: Any, calls: list[Any]) -> None:
+        """Evaluate the gate (once per turn) and dispatch or answer ``calls``."""
+        if self._evaluate_wake_gate_if_needed():
+            await self._announce_gate_trigger(
+                "Ignored utterance: wake-word gate dropped turn "
+                f"(wake={self._settings.wake_word!r})"
+            )
+        if self._turn_gated:
+            self._continuation = "gated"
+            await self._respond_gated_tool_calls(session, calls)
+        else:
+            self._dispatch_tool_calls(calls, track=True)
+
+    async def _await_transcription_then_resolve(self, session: Any) -> None:
+        """Hold the pending calls until the wake word is heard or time runs out."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + WAKE_TRANSCRIPTION_WAIT_SECONDS
+        while (
+            self._pending_gate_calls
+            and not self._turn_evaluated
+            and not self._wake_word_heard()
+        ):
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            # No await between the checks above and this clear, so a set()
+            # from the receive loop cannot be lost.
+            self._gate_input_changed.clear()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._gate_input_changed.wait(), remaining)
+        calls = self._pending_gate_calls
+        self._pending_gate_calls = []
+        self._gate_wait_task = None
+        if calls:
+            await self._decide_and_route(session, calls)
+        if self._reset_after_gate_decision:
+            self._reset_wake_gate()
+
+    def _dispatch_tool_calls(self, calls: list[Any], *, track: bool) -> None:
+        """Hand addressed calls to the dispatcher; arm the addressed continuation."""
+        if track:
+            self._continuation = "addressed"
+        for fc in calls:
+            if track and fc.id:
+                self._addressed_call_ids.add(fc.id)
+            if self._dispatcher is not None:
+                # Tracked by the dispatcher, not by this session: the call
+                # must outlive a dropped socket so its result reaches
+                # whichever session is connected when it finishes.
+                self._dispatcher.spawn(
+                    self._dispatcher.submit(fc.id, fc.name, fc.args or {})
+                )
+
+    def _note_tool_response_sent(self, call_id: str) -> None:
+        """A response for an addressed call re-arms the addressed continuation."""
+        if call_id in self._addressed_call_ids:
+            self._addressed_call_ids.discard(call_id)
+            self._continuation = "addressed"
+
+    async def _respond_gated_tool_calls(self, session: Any, calls: list[Any]) -> None:
+        """Answer calls dropped by the wake-word gate so the model never hangs."""
+        if not calls:
+            return
+        logger.info(
+            "[WAKE] answering %d gated tool call(s) as ignored: %s",
+            len(calls),
+            ", ".join(f"{fc.name}#{fc.id}" for fc in calls),
+        )
+        responses = [
+            types.FunctionResponse(
+                id=fc.id,
+                name=fc.name,
+                response=dict(_GATED_TOOL_RESPONSE),
+                scheduling=_response_scheduling_for(fc.name, self._settings.model),
+            )
+            for fc in calls
+        ]
+        try:
+            await session.send_tool_response(function_responses=responses)
+        except Exception as exc:
+            logger.warning("Failed to answer gated tool call(s): %s", exc)
 
     async def _receive_loop(self, session: Any) -> DisconnectReason | None:
         """Consume server responses and dispatch side effects.
@@ -866,7 +1067,12 @@ class LiveSession:
                         events = self._turn_state.consume_server_content(
                             turn_state_content
                         )
-                        if _should_reset_turn_gate(self._settings.model, server_content):
+                        if (
+                            _should_reset_turn_gate(self._settings.model, server_content)
+                            and not self._pending_gate_calls
+                        ):
+                            # Held tool calls decide the turn themselves; do
+                            # not force an empty-utterance verdict on them.
                             self._evaluate_wake_gate_if_needed()
                         self._queue_turn_events(events)
 
@@ -900,34 +1106,20 @@ class LiveSession:
                     # server folds results in without hijacking the turn.
                     tool_call = response.tool_call
                     if tool_call and tool_call.function_calls:
-                        if self._utterance_text and self._evaluate_wake_gate_if_needed():
-                            if self._speaker is not None:
-                                self._speaker.flush()
-                            await self._emit(
-                                SessionError(
-                                    message=(
-                                        "Ignored utterance: wake-word gate dropped turn "
-                                        f"(wake={self._settings.wake_word!r})"
-                                    ),
-                                    fatal=False,
-                                )
-                            )
-                        if not self._turn_gated:
-                            for fc in tool_call.function_calls:
-                                if self._dispatcher is not None:
-                                    # Tracked by the dispatcher, not by this
-                                    # session: the call must outlive a dropped
-                                    # socket so its result reaches whichever
-                                    # session is connected when it finishes.
-                                    self._dispatcher.spawn(
-                                        self._dispatcher.submit(
-                                            fc.id,
-                                            fc.name,
-                                            fc.args or {},
-                                        )
-                                    )
+                        await self._handle_tool_calls(
+                            session, list(tool_call.function_calls)
+                        )
 
                     cancellation = response.tool_call_cancellation
+                    if cancellation and cancellation.ids:
+                        cancelled = set(cancellation.ids)
+                        # Held calls the server withdrew need no answer.
+                        self._pending_gate_calls = [
+                            fc for fc in self._pending_gate_calls
+                            if fc.id not in cancelled
+                        ]
+                        self._addressed_call_ids -= cancelled
+                        self._gate_input_changed.set()
                     if cancellation and self._dispatcher is not None:
                         self._dispatcher.cancel(cancellation.ids or [])
 
@@ -937,7 +1129,7 @@ class LiveSession:
                         self._settings.model, server_content
                     ):
                         self._queue_turn_events(self._turn_state.flush())
-                        self._reset_wake_gate()
+                        self._on_turn_boundary_gate()
                         self._frame_utterance += 1
                         self._frame_sent_this_utterance = False
 
@@ -1321,6 +1513,7 @@ class LiveSession:
                     )
                 ]
             )
+            self._note_tool_response_sent(call_id)
             if name in COMPUTER_TOOL_NAMES:
                 await self._push_fresh_frame(session)
             return True
@@ -1537,6 +1730,7 @@ class LiveSession:
                 )
             ]
         )
+        self._note_tool_response_sent(call_id)
         if name in COMPUTER_TOOL_NAMES:
             await self._push_fresh_frame(self._session)
 
