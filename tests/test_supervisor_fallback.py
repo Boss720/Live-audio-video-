@@ -298,7 +298,7 @@ async def test_usage_recorded_against_current_pool(
     store: Store,
     monkeypatch: Any,
 ) -> None:
-    """UsageUpdate deltas feed the TierManager rolling TPM tracker."""
+    """Per-turn UsageUpdate increments feed the TierManager rolling TPM tracker."""
     clock = [1000.0]
     tier_manager = TierManager(tier1_key=TIER1_KEY, free_key=FREE_KEY, clock=lambda: clock[0])
     tier1 = tier_manager.get_tier("tier1")
@@ -309,8 +309,8 @@ async def test_usage_recorded_against_current_pool(
     keys: list[str | None] = []
 
     async def on_connect(session: FakeLiveSession) -> None:
-        # Live API usage_metadata totals are cumulative within a session; the
-        # supervisor must record only the delta (120, then +30).
+        # Live API usage_metadata per message is a per-turn increment, so the
+        # supervisor records each total as-is (120, then 150).
         session.usage(prompt_token_count=100, response_token_count=20, total_token_count=120)
         session.usage(prompt_token_count=120, response_token_count=30, total_token_count=150)
 
@@ -336,8 +336,8 @@ async def test_usage_recorded_against_current_pool(
     )
     await asyncio.sleep(0.05)  # let the tap process the second event
 
-    assert tier_manager.tpm_headroom(tier1, MODEL) == headroom_before - 150
-    assert tier1.tpm_used == 150
+    assert tier_manager.tpm_headroom(tier1, MODEL) == headroom_before - 270
+    assert tier1.tpm_used == 270
 
     await command_queue.put(Disconnect())
     reason = await asyncio.wait_for(task, timeout=5)

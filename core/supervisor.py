@@ -9,8 +9,8 @@ GoAway, failure budgets, and in-flight tool results.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import random
+import time
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -23,7 +23,6 @@ from audit.journal import Journal
 from core.commands import AgentCommand, Disconnect, GatingMode
 from core.dispatcher import ToolDispatcher
 from core.events import (
-    AudioLevel,
     ConnectionState,
     ConnectionStateChanged,
     ContextReset,
@@ -52,7 +51,7 @@ _FAILURE_WINDOW = timedelta(minutes=5)
 _HANDLE_TTL_MINUTES = 110
 _MAX_BACKOFF_TRANSIENT = 30.0
 _MAX_BACKOFF_QUOTA = 120.0
-_METER_INTERVAL_SECONDS = 0.033
+_STABLE_RESET_SECONDS = 60.0
 _BUDGETS: dict[str, int] = {
     "transient": 6,
     "rejected_handle": 6,
@@ -163,7 +162,7 @@ class Supervisor:
         self._cascade_anchor: tuple[TierConfig, str] | None = None
         self._rate_limit_backoff_stage = 0
         self._rate_limit_hit: RateLimitHit | None = None
-        self._last_usage_total = 0
+        self._connected_at: float | None = None
 
         self._mic: Microphone | None = None
         self._speaker: Speaker | None = None
@@ -218,16 +217,13 @@ class Supervisor:
             str(self._settings.workspace_root),
         )
 
-        meter_task: asyncio.Task[Any] | None = None
         try:
             await self._start_media()
-            if self._mic is not None or self._speaker is not None:
-                meter_task = asyncio.create_task(self._meter_loop())
 
             while True:
                 self._dispatcher.set_epoch(self._epoch)
                 self._rate_limit_hit = None
-                self._last_usage_total = 0
+                self._connected_at = None
                 if self._tier_manager is not None and self._current_tier is not None:
                     # Point the session at the current pool's key and model.
                     # The override lives inside secrets.get_api_key, which the
@@ -254,10 +250,22 @@ class Supervisor:
                     turn_state=self._turn_state,
                     on_resumption_handle=self._on_resumption_handle,
                     on_connected=self._on_connected,
+                    free_tier=(
+                        self._current_tier is not None
+                        and self._current_tier.tier_name == "free"
+                    ),
                 )
                 self._live_session = live_session
                 reason = await live_session.run()
                 self._live_session = None
+
+                if (
+                    self._connected_at is not None
+                    and time.monotonic() - self._connected_at >= _STABLE_RESET_SECONDS
+                ):
+                    # Stable long enough: restart the backoff/budget ladder.
+                    self._failure_log.clear()
+                self._connected_at = None
 
                 if reason.code == "user_request":
                     return reason
@@ -301,14 +309,19 @@ class Supervisor:
                         ContextReset(reason="resumption handle rejected")
                     )
 
-                if not self._check_failure_budget(category):
+                # GoAway with a handle is a planned server drain: resume at
+                # once and keep it off the error ladder.
+                instant_go_away = (
+                    category == "go_away" and self._resumption_handle is not None
+                )
+                if not instant_go_away and not self._check_failure_budget(category):
                     msg = f"failure budget exceeded for {category}"
                     await self._emit(
                         ConnectionStateChanged(ConnectionState.FAILED, detail=msg)
                     )
                     return DisconnectReason("failed", msg)
 
-                backoff = self._backoff(category)
+                backoff = 0.0 if instant_go_away else self._backoff(category)
                 await self._emit(
                     ConnectionStateChanged(
                         ConnectionState.RECONNECTING, detail=reason.detail
@@ -326,10 +339,6 @@ class Supervisor:
             secrets.set_active_api_key(None)
             self._store.end_run(self._run_id)
             await self._emit(ConnectionStateChanged(ConnectionState.DISCONNECTED))
-            if meter_task is not None:
-                meter_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await meter_task
             await self._stop_media()
 
     async def _on_resumption_handle(self, handle: str | None, resumable: bool) -> None:
@@ -360,6 +369,7 @@ class Supervisor:
         self._rate_limit_backoff_stage = 0
         self._cascade_anchor = None
         self._exhausted_pools.clear()
+        self._connected_at = time.monotonic()
         if self._resumption_handle is None:
             prior_turns = self._store.get_turns(self._run_id)
             if prior_turns:
@@ -374,7 +384,7 @@ class Supervisor:
                         )
                         for role, text, _epoch in prior_turns
                     ],
-                    turn_complete=True,
+                    turn_complete=False,
                 )
 
         # Snapshot the batch, but retain ownership until each delivery succeeds.
@@ -500,22 +510,6 @@ class Supervisor:
 
         self._media_started = False
 
-    async def _meter_loop(self) -> None:
-        """Poll media levels and emit ``AudioLevel`` events."""
-        try:
-            while True:
-                if self._mic is not None:
-                    await self._emit(
-                        AudioLevel(source="mic", level=self._mic.level)
-                    )
-                if self._speaker is not None:
-                    await self._emit(
-                        AudioLevel(source="speaker", level=self._speaker.level)
-                    )
-                await asyncio.sleep(_METER_INTERVAL_SECONDS)
-        except asyncio.CancelledError:
-            pass
-
     def _classify(self, reason: DisconnectReason) -> str:
         """Map a session disconnect reason to the supervisor category."""
         if reason.code in (
@@ -577,16 +571,15 @@ class Supervisor:
     def _record_tier_usage(self, event: UsageUpdate) -> None:
         """Feed token usage into the TierManager's rolling TPM tracker.
 
-        Live API ``usage_metadata`` totals are cumulative within a session, so
-        only the delta since the previous event is recorded.
+        Live API ``usage_metadata`` per message is a per-turn increment (each
+        turn rebills the context), not a session total, so every event's
+        ``total_tokens`` is recorded as-is.
         """
         if self._tier_manager is None or self._current_tier is None:
             return
-        delta = max(0, event.total_tokens - self._last_usage_total)
-        self._last_usage_total = max(self._last_usage_total, event.total_tokens)
-        if delta:
+        if event.total_tokens > 0:
             self._tier_manager.record_usage(
-                self._current_tier, self._current_model, delta
+                self._current_tier, self._current_model, event.total_tokens
             )
 
     async def _handle_rate_limit(self, reason: DisconnectReason) -> DisconnectReason | None:
