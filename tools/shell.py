@@ -7,13 +7,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import signal
+import subprocess
 import sys
 
 import tools._state as _state
 from policy import PathDeniedError
+from policy.redaction import redact
 from tools.registry import RunCommandArgs, ToolResult
 
-MAX_CMD_BYTES = 8 * 1024  # 8 KB
+HEAD_KEEP_BYTES = 2 * 1024  # first 2 KB of each stream
+TAIL_KEEP_BYTES = 6 * 1024  # last 6 KB of each stream (errors live at the tail)
+_REAP_TIMEOUT_SECONDS = 5
 MAX_TIMEOUT_SECONDS = 300
 
 _running_shells: dict[str, asyncio.subprocess.Process] = {}
@@ -26,25 +32,43 @@ def _clamp_timeout(value: int | None) -> int:
     return max(1, min(value, MAX_TIMEOUT_SECONDS))
 
 
-def _truncate(text: str, limit: int) -> str:
-    if len(text) > limit:
-        return text[:limit] + "\n… (truncated)"
-    return text
+def _truncate(text: str, head: int = HEAD_KEEP_BYTES, tail: int = TAIL_KEEP_BYTES) -> str:
+    """Keep the first ``head`` and last ``tail`` bytes, marking what was omitted."""
+    data = text.encode("utf-8")
+    if len(data) <= head + tail:
+        return text
+    omitted = len(data) - head - tail
+    head_text = data[:head].decode("utf-8", errors="ignore")
+    tail_text = data[-tail:].decode("utf-8", errors="ignore")
+    return f"{head_text}\n... [{omitted} bytes omitted] ...\n{tail_text}"
 
 
-def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
-    """Safely terminate a process and all its child processes."""
+async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
+    """Terminate a process and all its children without blocking the event loop."""
     if sys.platform == "win32":
-        import subprocess
-
         with contextlib.suppress(Exception):
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                capture_output=True,
-                check=False,
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill",
+                "/F",
+                "/T",
+                "/PID",
+                str(proc.pid),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
             )
+            await asyncio.wait_for(killer.wait(), timeout=_REAP_TIMEOUT_SECONDS)
+    else:
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
     with contextlib.suppress(ProcessLookupError, OSError):
         proc.kill()
+
+
+async def _reap(proc: asyncio.subprocess.Process) -> None:
+    """Wait (bounded) for ``proc`` to exit after it has been killed."""
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(proc.wait(), timeout=_REAP_TIMEOUT_SECONDS)
 
 
 async def run_command(args: RunCommandArgs, *, call_id: str = "") -> ToolResult:
@@ -74,16 +98,20 @@ async def run_command(args: RunCommandArgs, *, call_id: str = "") -> ToolResult:
                 "-NonInteractive",
                 "-Command",
                 args.command,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
             )
         else:
             proc = await asyncio.create_subprocess_shell(
                 args.command,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
+                start_new_session=True,
             )
 
         if call_id:
@@ -94,27 +122,31 @@ async def run_command(args: RunCommandArgs, *, call_id: str = "") -> ToolResult:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout
             )
+        except asyncio.CancelledError:
+            await _kill_process_tree(proc)
+            await _reap(proc)
+            raise
         except TimeoutError:
-            _kill_process_tree(proc)
-            with contextlib.suppress(Exception):
-                await proc.communicate()
+            await _kill_process_tree(proc)
+            await _reap(proc)
             return ToolResult(
                 False,
                 f"Error: Command timed out after {timeout}s.\nCommand: {args.command}",
             )
         finally:
             if call_id:
-                async with _running_shells_lock:
-                    _running_shells.pop(call_id, None)
+                # Plain pop (no await) so cleanup survives a second cancellation.
+                _running_shells.pop(call_id, None)
 
-        stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-        stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+        # Redact the full streams first so a secret cannot be split by truncation.
+        stdout = redact(stdout_bytes.decode("utf-8", errors="replace")) if stdout_bytes else ""
+        stderr = redact(stderr_bytes.decode("utf-8", errors="replace")) if stderr_bytes else ""
 
         parts: list[str] = []
         if stdout:
-            parts.append(f"[stdout]\n{_truncate(stdout, MAX_CMD_BYTES)}")
+            parts.append(f"[stdout]\n{_truncate(stdout)}")
         if stderr:
-            parts.append(f"[stderr]\n{_truncate(stderr, MAX_CMD_BYTES)}")
+            parts.append(f"[stderr]\n{_truncate(stderr)}")
 
         is_ok = proc.returncode == 0
         exit_info = f"[exit code: {proc.returncode}]"
@@ -138,5 +170,5 @@ async def cancel_shell(call_id: str) -> bool:
     if proc is None:
         return False
 
-    _kill_process_tree(proc)
+    await _kill_process_tree(proc)
     return True
