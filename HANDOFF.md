@@ -69,6 +69,9 @@
     estimate at 1280 px. screen_deduplicate is off by default so "skipped" shows a dash.
   - Watch: mic.dropped_chunks 37 of 7335 (0.5%, 1.5 s of capture older than 400 ms, likely at connect).
     speaker.high_water 11.9 s: server sends audio far faster than real time, so flush on barge-in matters.
+  - Log scan of the 19:19 session (agent.log): no ERROR/WARNING. Wake gate: 176 ADDRESSED vs 232 GATED in
+    the last 3000 lines; gated tool calls (list_directory, computer_mouse_move) answered "ignored" with no
+    loop. Barge-in flush fires on every gated utterance. GUI closed after the session.
   - Not yet checked live: barge-in on speakers (expected disabled), wake-word false positives, click
     accuracy at 1568 px, headless EOF, GoAway resume, late-ASR wake wait (M3).
 - NEXT: live session checks (M3, Wave 2, Wave 3 items in PLAN.md) using the new diagnostics page, then
