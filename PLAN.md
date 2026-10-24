@@ -1,4 +1,53 @@
-# PLAN.md — Post-Phase-6 Improvement Plan
+# PLAN.md
+
+## Review roadmap (2026-10-24) — ACTIVE
+
+Source: review page `output/review-2026-10-24/live-agent-review.html`
+(published https://claude.ai/artifact/HWD3tvVaRrmSZaPBQNrn2s). Baseline commit
+`1490dd7` on `Leroy`: 406 passed, 3 skipped. Each module owns disjoint files so
+agents can run in parallel. Commit per module after coordinator verification.
+
+### Wave 1 — safety, privacy, hangs
+- [x] M1 Safe defaults — `settings/settings.py`, `app/main_window.py` (wake-word fallback only).
+      yolo=False, computer_use_enabled=False, model=gemini-3.8-live, map `minimal`
+      thinking to `low` on extended-thinking, GUI wake-word fallback uses settings default.
+- [x] M2 Privacy routing — `core/supervisor.py`, `core/tier_manager.py`.
+      Startup/fallback/reset obey privacy_mode + prefer_free_tier; strict never uses Free;
+      strict with only Free key fails with an actionable error.
+- [x] M3 Session policy + wake gate — `core/session.py`.
+      Build PolicyEngine only when no dispatcher injected; post-tool continuations are
+      addressed; gated tool calls always get a FunctionResponse; no ungated dispatch
+      before transcription.
+- [x] M5 Turn order — `core/turn_state.py`.
+      USER TurnComplete before MODEL; interrupted answers persisted and id advanced.
+
+Wave 1 result: 439 passed, 3 skipped; runtime mypy 40 files + eval mypy 3 files clean; ruff clean.
+Open question for user: prefer_free_tier default True now really starts on Free when both keys exist.
+Live-socket checks still needed for M3 (see HANDOFF).
+
+### Wave 2 — latency
+- [ ] Mic `latency="low"` + 40 ms default chunk (`media/microphone.py`, settings)
+- [ ] Speaker blocksize 480 + 40-60 ms prebuffer, RMS in callback (`media/speaker.py`)
+- [ ] SQLite WAL/synchronous=NORMAL/busy_timeout + indexes + off-loop writer (`persist/store.py`, `audit/journal.py`)
+- [ ] GoAway zero backoff; ladder reset after 60 s stable (`core/supervisor.py`)
+- [ ] INTERRUPT scheduling for computer/shell on extended thinking; replay `turn_complete=False`;
+      frame wait timeout on typed text; diagnostics 1 Hz, meters 15 Hz (`core/session.py`)
+- [ ] trigger_tokens default; free-tier rows store 0 USD; settle usage cumulative/incremental
+- [ ] Speech-end to first-audio metric (`obs/metrics.py`)
+
+### Wave 3 — accuracy and safety hardening
+- [ ] Frames: 1280-1568 px, q80-85, subsampling=0, cursor overlay, pixel-hash dedup, reuse mss
+- [ ] Echo: gate mic during playback unless headset; later AEC
+- [ ] Tools: description truth-up, le=300, read cap 64 KB, shell head+tail, search/replace tools
+- [ ] Redaction patterns; redact before truncate; computer-use window/combination guard; clipboard restore
+- [ ] Shell cancellation tree kill + await; headless EOF; wake-word token matching
+- [ ] google-genai 2.28.0 -> 2.33.0
+
+### Wave 4 — UI (mocks A, C, D)
+- [ ] Status strip, settings dialog, approvals rail, chat bubbles, diagnostics page
+
+---
+
 
 Baseline: branch `bongo`, commit `6153506`. 133 tests pass, ruff/mypy clean.
 Source of external facts: `~/Downloads/gemini-live-integration-plan.md` (Aug 2026 Live API research).

@@ -1,6 +1,31 @@
 # Handoff & Continuation Plan
 
-## Active handoff — 24 October 2026
+## CURRENT — Review roadmap, 24 October 2026 (read this first)
+
+- Plan: top section of `PLAN.md` ("Review roadmap"). Findings with file:line:
+  `output/review-2026-10-24/live-agent-review.html` (untracked; `output/` is not committed).
+- Branch `Leroy`. Waves 1-3 of earlier work committed as `1490dd7` (406 passed, 3 skipped).
+- Wave 1 DONE and committed per module (M1 defaults, M2 privacy routing, M3 session
+  policy + wake gate, M5 turn order). Gates: 439 passed, 3 skipped; ruff clean.
+- mypy: `mypy .` aborts on a duplicate module name (scripts/reasoning_eval.py) — not a
+  type error. Use the two scopes instead:
+  `.venv/Scripts/python.exe -m mypy app audit core media obs persist policy settings tools main.py headless.py bridge_stdio.py` (40 files)
+  and `.venv/Scripts/python.exe -m mypy scripts/eval_scoring.py scripts/reasoning_eval.py scripts/vision_eval.py` (3 files).
+- Test command: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider --basetemp=<temp dir>`
+  (default temp dir is sandbox-blocked). Ruff: `.venv/Scripts/python.exe -m ruff check .`
+  (project does not use ruff format; do not reformat files).
+- Commit rule: one commit per module, message via file, no Claude trailer.
+- Behaviour changes in Wave 1: fresh installs default yolo=False, computer_use=False,
+  model gemini-3.8-live. Saved user values still win. Strict privacy + Free-only key now
+  fails before connect. prefer_free_tier=True (existing default) now really starts on
+  Free when both keys exist — USER DECISION PENDING whether to flip that default.
+- M3 needs live-socket checks: late ASR after tool response clears the addressed
+  continuation; 300 ms ASR wait (`WAKE_TRANSCRIPTION_WAIT_SECONDS`) may be short; server
+  must accept the "ignored" FunctionResponse for NON_BLOCKING tools without a call loop.
+- NEXT: Wave 2 latency (PLAN.md). Partition: mic+speaker (media/), store+journal
+  (persist/, audit/), supervisor GoAway/ladder, session scheduling/replay/diagnostics.
+
+## Previous handoff — 24 October 2026 (historical)
 
 This section supersedes historical state and counts below. Read this first after
 a context/usage reset. User authorized beginning the assessment roadmap and asked
