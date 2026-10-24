@@ -445,6 +445,10 @@ def test_response_scheduling_for_non_blocking_only(monkeypatch: Any) -> None:
     assert _response_scheduling_for("unknown_tool") is None
     assert (
         _response_scheduling_for("write_file", "gemini-3.8-live-extended-thinking")
+        == types.FunctionResponseScheduling.INTERRUPT
+    )
+    assert (
+        _response_scheduling_for("read_file", "gemini-3.8-live-extended-thinking")
         == types.FunctionResponseScheduling.WHEN_IDLE
     )
 

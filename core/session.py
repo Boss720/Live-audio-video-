@@ -73,6 +73,12 @@ logger = get_logger(__name__)
 
 _MAX_VIDEO_SEND_ERRORS = 5
 _METER_INTERVAL_SECONDS = 0.033
+# Typed text waits at most this long for the pre-send screen frame; Disconnect
+# and approval commands queue behind the send loop, so it must not stall.
+_FRAME_WAIT_SECONDS = 1.5
+# Event-queue noise caps: diagnostics snapshots at 1 Hz, audio meters at 15 Hz.
+_DIAGNOSTICS_MIN_INTERVAL_SECONDS = 1.0
+_METER_EMIT_MIN_INTERVAL_SECONDS = 1 / 15
 # Time given to the desktop to repaint after a computer-use action before the
 # post-action frame is grabbed.
 _POST_ACTION_SETTLE_SECONDS = 0.15
@@ -141,6 +147,15 @@ _BEHAVIOR_BY_SCHEDULE: dict[str, types.Behavior] = {
 _RESPONSE_SCHEDULING_BY_SCHEDULE: dict[str, types.FunctionResponseScheduling] = {
     "non_blocking_when_idle": types.FunctionResponseScheduling.WHEN_IDLE,
     "non_blocking_silent": types.FunctionResponseScheduling.SILENT,
+}
+
+# Extended Thinking models keep reasoning after a spoken filler and report
+# "idle" late, so WHEN_IDLE would park click/screenshot/shell results behind the
+# model. Mutating/computer tools (blocking_interrupt) must land immediately;
+# read-only tools stay WHEN_IDLE.
+_EXTENDED_RESPONSE_SCHEDULING_BY_SCHEDULE: dict[str, types.FunctionResponseScheduling] = {
+    **_RESPONSE_SCHEDULING_BY_SCHEDULE,
+    "blocking_interrupt": types.FunctionResponseScheduling.INTERRUPT,
 }
 
 _MEDIA_RESOLUTION_BY_SETTING: dict[str, types.MediaResolution] = {
@@ -266,7 +281,7 @@ def _response_scheduling_for(
     """Scheduling to attach to a tool response, or ``None`` for blocking tools."""
     schedule = _tool_schedules().get(name)
     if model is not None and _is_extended_thinking_model(model):
-        return _RESPONSE_SCHEDULING_BY_SCHEDULE.get(
+        return _EXTENDED_RESPONSE_SCHEDULING_BY_SCHEDULE.get(
             schedule or "", types.FunctionResponseScheduling.WHEN_IDLE
         )
     if schedule is None:
@@ -390,8 +405,10 @@ class LiveSession:
         on_resumption_handle: Callable[[str, bool], Awaitable[None]] | None = None,
         on_connected: Callable[[LiveSession], Awaitable[None]] | None = None,
         respond_callback: Callable[[str, str, ToolResult], Awaitable[bool]] | None = None,
+        free_tier: bool = False,
     ) -> None:
         self._settings = settings
+        self._free_tier = free_tier
         self._command_queue = command_queue
         self._event_queue = event_queue
         self._journal = journal
@@ -470,6 +487,16 @@ class LiveSession:
         self._undecided_turn_events: list[AgentEvent] = []
         self._metrics = RuntimeMetrics()
         self._last_video_sent_at: float | None = None
+        self._last_diagnostics_at: float | None = None
+        self._last_meter: dict[str, tuple[float, float]] = {}
+        # Speech end -> first model audio (per turn). ``_speech_end_at`` is the
+        # earliest reliable end-of-user-speech signal the session has: the
+        # client ``audio_stream_end`` on mute, else the latest server input
+        # transcription chunk (server VAD sends no explicit activity end). It
+        # is consumed by the first audio chunk of the turn, so interruptions
+        # and late transcription chunks cannot double count.
+        self._speech_end_at: float | None = None
+        self._first_audio_seen = False
 
     async def run(self) -> DisconnectReason:
         """Connect to the API, spawn loops, and return when the session ends."""
@@ -675,6 +702,9 @@ class LiveSession:
             # so VAD can finalize any in-flight utterance. Best-effort: the
             # session may already be broken.
             await self._send_audio_stream_end(session)
+
+            # Final snapshot so the last second of timings is not lost.
+            await self._emit_diagnostics(force=True)
 
             # Flush any partial transcript that arrived just before close.
             self._turn_state.set_timer_callback(None)
@@ -1054,8 +1084,22 @@ class LiveSession:
                         # the model turn. Kill queued playback first, before any
                         # other handling, so the model stops mid-sentence rather
                         # than finishing the response it already generated.
+                        if server_content.interrupted:
+                            # The interrupted response never delivers a first
+                            # audio for the old speech end; start over.
+                            self._speech_end_at = None
+                            self._first_audio_seen = False
                         if server_content.interrupted and self._speaker is not None:
                             self._speaker.flush()
+
+                        # Latest input transcription chunk approximates the end
+                        # of the user's speech (see ``_speech_end_at``).
+                        if (
+                            server_content.input_transcription
+                            and server_content.input_transcription.text
+                            and not self._first_audio_seen
+                        ):
+                            self._speech_end_at = self._metrics.stamp()
 
                         # Extended Thinking can set turn_complete at the end of
                         # each spoken filler while background reasoning continues.
@@ -1089,6 +1133,14 @@ class LiveSession:
                                 if inline_data and inline_data.data:
                                     with self._metrics.measure("audio_enqueue_ms"):
                                         self._speaker.write(inline_data.data)
+                                    if not self._first_audio_seen:
+                                        self._first_audio_seen = True
+                                        if self._speech_end_at is not None:
+                                            self._metrics.record_elapsed(
+                                                "speech_end_to_first_audio_ms",
+                                                self._speech_end_at,
+                                            )
+                                            self._speech_end_at = None
                                     self._metrics.record_elapsed(
                                         "receive_to_audio_queue_ms", received_at
                                     )
@@ -1132,6 +1184,8 @@ class LiveSession:
                         self._on_turn_boundary_gate()
                         self._frame_utterance += 1
                         self._frame_sent_this_utterance = False
+                        self._speech_end_at = None
+                        self._first_audio_seen = False
 
                     usage = response.usage_metadata
                     if usage:
@@ -1165,20 +1219,22 @@ class LiveSession:
                         completion_tokens = (
                             getattr(usage, "response_token_count", 0) or 0
                         )
-                        # Cumulative session cost at paid-tier rates. The
-                        # session cannot tell free from paid tier (the
-                        # supervisor knows); the supervisor/GUI should null
-                        # ``estimated_usd`` for free-tier sessions so the GUI
+                        # Per-message usage_metadata is a per-turn increment
+                        # (context is rebilled each turn), so counts are summed.
+                        # Cumulative cost is at paid-tier rates; free-tier
+                        # sessions (``free_tier``) report ``None`` so the GUI
                         # shows "Free".
                         self._prompt_tokens_used += prompt_tokens
                         self._completion_tokens_used += completion_tokens
                         input_rate, output_rate = _cost_rates_for_model(
                             self._settings.model
                         )
-                        estimated_usd = (
+                        estimated_usd: float | None = (
                             self._prompt_tokens_used * input_rate
                             + self._completion_tokens_used * output_rate
                         ) / 1_000_000
+                        if self._free_tier:
+                            estimated_usd = None
                         usage_event = UsageUpdate(
                             prompt_tokens=prompt_tokens,
                             cached_tokens=getattr(
@@ -1193,7 +1249,7 @@ class LiveSession:
                         )
                         await self._emit(usage_event)
                         self._record_usage(usage_event)
-                        await self._emit(self.runtime_diagnostics())
+                        await self._emit_diagnostics()
 
         except asyncio.CancelledError:
             return None
@@ -1221,9 +1277,22 @@ class LiveSession:
                     ):
                         # Every typed turn can refer to the screen; inspect it
                         # before forwarding text, without guessing its meaning.
-                        refreshed = await asyncio.shield(
-                            self._spawn_frame(session, reason="user_turn")
-                        )
+                        # Bounded: the shielded frame task keeps running (and
+                        # is cancelled in ``_stop_media``) if we stop waiting.
+                        try:
+                            refreshed = await asyncio.wait_for(
+                                asyncio.shield(
+                                    self._spawn_frame(session, reason="user_turn")
+                                ),
+                                _FRAME_WAIT_SECONDS,
+                            )
+                        except TimeoutError:
+                            logger.warning(
+                                "[SCREEN] frame wait exceeded %.1fs; sending text without it",
+                                _FRAME_WAIT_SECONDS,
+                            )
+                            self._metrics.increment("frame_wait_timeouts")
+                            refreshed = True
                         if not refreshed:
                             await self._emit(
                                 SessionError(
@@ -1262,6 +1331,8 @@ class LiveSession:
                         # inline (not queued behind audio chunks) so VAD
                         # finalizes the utterance within ~50ms of the mute.
                         self._audio_streamed = False
+                        if not self._first_audio_seen:
+                            self._speech_end_at = self._metrics.stamp()
                         try:
                             await session.send_realtime_input(audio_stream_end=True)
                         except Exception as exc:
@@ -1479,13 +1550,9 @@ class LiveSession:
                     return
 
                 if self._mic is not None:
-                    await self._emit(
-                        AudioLevel(source="mic", level=self._mic.level)
-                    )
+                    await self._emit_level("mic", self._mic.level)
                 if self._speaker is not None:
-                    await self._emit(
-                        AudioLevel(source="speaker", level=self._speaker.level)
-                    )
+                    await self._emit_level("speaker", self._speaker.level)
 
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(
@@ -1494,6 +1561,17 @@ class LiveSession:
                     )
         except asyncio.CancelledError:
             pass
+
+    async def _emit_level(self, source: str, level: float) -> None:
+        """Emit ``AudioLevel`` only when changed, at most 15 Hz per source."""
+        now = self._metrics.stamp()
+        last = self._last_meter.get(source)
+        if last is not None and (
+            level == last[0] or now - last[1] < _METER_EMIT_MIN_INTERVAL_SECONDS
+        ):
+            return
+        self._last_meter[source] = (level, now)
+        await self._emit(AudioLevel(source=source, level=level))
 
     def _make_respond_callback(
         self, session: Any
@@ -1751,6 +1829,18 @@ class LiveSession:
             timings=self._metrics.snapshot(), audio=audio, counters=self._metrics.counters()
         )
 
+    async def _emit_diagnostics(self, *, force: bool = False) -> None:
+        """Publish ``runtime_diagnostics`` at most once per second unless forced."""
+        now = self._metrics.stamp()
+        if (
+            not force
+            and self._last_diagnostics_at is not None
+            and now - self._last_diagnostics_at < _DIAGNOSTICS_MIN_INTERVAL_SECONDS
+        ):
+            return
+        self._last_diagnostics_at = now
+        await self._emit(self.runtime_diagnostics())
+
     async def _diagnostics_loop(self) -> None:
         """Sample local event-loop lag once per second; publish with usage only."""
         while not self._shutdown_event.is_set():
@@ -1764,7 +1854,7 @@ class LiveSession:
         """Persist non-zero usage modalities as incremental history rows."""
         recorded_at = datetime.now(UTC).isoformat()
         input_rate, output_rate = _cost_rates_for_model(self._settings.model)
-        if event.estimated_usd is None or event.estimated_usd == 0.0:
+        if self._free_tier or event.estimated_usd is None or event.estimated_usd == 0.0:
             prompt_usd = 0.0
             completion_usd = 0.0
         else:
