@@ -22,7 +22,7 @@ agents can run in parallel. Commit per module after coordinator verification.
       USER TurnComplete before MODEL; interrupted answers persisted and id advanced.
 
 Wave 1 result: 439 passed, 3 skipped; runtime mypy 40 files + eval mypy 3 files clean; ruff clean.
-Open question for user: prefer_free_tier default True now really starts on Free when both keys exist.
+Decided: prefer_free_tier default stays True (Free first), confirmed by user.
 Live-socket checks still needed for M3 (see HANDOFF).
 
 ### Wave 2 — latency

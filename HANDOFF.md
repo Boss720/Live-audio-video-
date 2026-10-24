@@ -18,7 +18,7 @@
 - Behaviour changes in Wave 1: fresh installs default yolo=False, computer_use=False,
   model gemini-3.8-live. Saved user values still win. Strict privacy + Free-only key now
   fails before connect. prefer_free_tier=True (existing default) now really starts on
-  Free when both keys exist — USER DECISION PENDING whether to flip that default.
+  Free when both keys exist — user confirmed 2026-10-24: keep Free first (no change).
 - M3 needs live-socket checks: late ASR after tool response clears the addressed
   continuation; 300 ms ASR wait (`WAKE_TRANSCRIPTION_WAIT_SECONDS`) may be short; server
   must accept the "ignored" FunctionResponse for NON_BLOCKING tools without a call loop.
