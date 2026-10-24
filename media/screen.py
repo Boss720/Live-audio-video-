@@ -131,31 +131,43 @@ class ScreenCapture:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._running = False
+        self._stop_event = threading.Event()
+        self._lifecycle_lock = asyncio.Lock()
 
     # -- Public API --
 
     async def start(self) -> None:
         """Begin capturing the screen."""
-        # Validate the monitor index up front rather than failing per-frame.
-        region = validate_monitor(self.monitor)
-
-        self._loop = asyncio.get_running_loop()
-        self._running = True
-        self._thread = threading.Thread(target=self._capture, daemon=True)
-        self._thread.start()
-        logger.info(
-            "[SCREEN] Sharing monitor %d (%dx%d) at %g fps",
-            self.monitor,
-            region["width"],
-            region["height"],
-            self.fps,
-        )
+        async with self._lifecycle_lock:
+            if self._running:
+                return
+            if self._thread is not None and self._thread.is_alive():
+                raise RuntimeError("Screen capture thread is still stopping")
+            # Validation and capture each create MSS on their own thread.
+            region = await asyncio.to_thread(validate_monitor, self.monitor)
+            self._discard_pending_frame()
+            self._stop_event.clear()
+            self._loop = asyncio.get_running_loop()
+            self._running = True
+            self._thread = threading.Thread(target=self._capture, daemon=True)
+            self._thread.start()
+            logger.info(
+                "[SCREEN] Sharing monitor %d (%dx%d) at %g fps",
+                self.monitor,
+                region["width"],
+                region["height"],
+                self.fps,
+            )
 
     async def set_monitor(self, monitor: int) -> None:
         """Switch the active capture and discard any queued frame from the old monitor."""
         region = await asyncio.to_thread(validate_monitor, monitor)
-        self.monitor = monitor
-        self._discard_pending_frame()
+        async with self._lifecycle_lock:
+            self.monitor = monitor
+            # Validation can finish after stop. Preserve the shutdown sentinel
+            # so a waiting sender still learns that capture has ended.
+            if self._running:
+                self._discard_pending_frame()
         logger.info(
             "[SCREEN] Switched to monitor %d (%dx%d)",
             monitor,
@@ -172,14 +184,23 @@ class ScreenCapture:
 
     async def stop(self) -> None:
         """Stop capturing."""
-        if self._running:
+        async with self._lifecycle_lock:
+            was_running = self._running
             self._running = False
+            self._stop_event.set()
             if self._loop is not None and not self._loop.is_closed():
-                self._loop.call_soon_threadsafe(self._enqueue_sentinel)
+                if self._loop is asyncio.get_running_loop():
+                    self._enqueue_sentinel()
+                else:
+                    self._loop.call_soon_threadsafe(self._enqueue_sentinel)
             if self._thread is not None:
-                self._thread.join(timeout=2)
-                self._thread = None
-            logger.info("[SCREEN] Screen sharing stopped")
+                await asyncio.to_thread(self._thread.join, timeout=2)
+                if self._thread.is_alive():
+                    logger.warning("Screen capture thread is still stopping")
+                else:
+                    self._thread = None
+            if was_running:
+                logger.info("[SCREEN] Screen sharing stopped")
 
     # -- Capture thread --
 
@@ -219,14 +240,16 @@ class ScreenCapture:
                 # Pace to the target frame rate, accounting for capture time
                 elapsed = time.monotonic() - started
                 if self._running and elapsed < interval:
-                    time.sleep(interval - elapsed)
+                    self._stop_event.wait(interval - elapsed)
 
     def _publish(self, frame: bytes) -> None:
         """Hand a frame to the event loop, replacing any frame not yet sent."""
-        if self._loop is None:
+        if self._loop is None or not self._running:
             return
 
         def put() -> None:
+            if not self._running:
+                return
             if self._queue.full():
                 with contextlib.suppress(asyncio.QueueEmpty):
                     self._queue.get_nowait()  # drop the stale frame

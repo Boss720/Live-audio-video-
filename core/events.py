@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from obs.metrics import TimingSummary
+
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
@@ -165,6 +167,25 @@ class UsageUpdate:
     timestamp: datetime = field(default_factory=_utc_now, compare=False)
 
 
+@dataclass(frozen=True, slots=True)
+class DiagnosticsUpdate:
+    """Content-free local measurements; timing names explicitly describe spans."""
+
+    timings: dict[str, TimingSummary] = field(default_factory=dict)
+    audio: dict[str, float] = field(default_factory=dict)
+    counters: dict[str, int] = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=_utc_now, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class TextNotSent:
+    """Return a rejected text draft to its originating UI for explicit retry."""
+
+    text: str
+    reason: str
+    timestamp: datetime = field(default_factory=_utc_now, compare=False)
+
+
 # Convenience union used by type hints; not instantiated.
 AgentEvent = (
     ConnectionStateChanged
@@ -180,4 +201,6 @@ AgentEvent = (
     | RateLimitHit
     | ContextReset
     | UsageUpdate
+    | DiagnosticsUpdate
+    | TextNotSent
 )

@@ -68,7 +68,9 @@ _KNOWN_MODEL_ALIASES: dict[str, str] = {
     "gemini 3.8 live": "gemini-3.8-live",
     "gemini-3.1-flash-live-preview": "gemini-3.1-flash-live-preview",
     "gemini 3.1 flash live preview": "gemini-3.1-flash-live-preview",
-    "gemini-2.5-flash-native-audio-preview-12-2025": "gemini-2.5-flash-native-audio-preview-12-2025",
+    "gemini-2.5-flash-native-audio-preview-12-2025": (
+        "gemini-2.5-flash-native-audio-preview-12-2025"
+    ),
     "gemini 2.5 flash native audio preview": "gemini-2.5-flash-native-audio-preview-12-2025",
     "gemini-2.5-flash-native-audio": "gemini-2.5-flash-native-audio-preview-12-2025",
 }
@@ -282,6 +284,9 @@ class AppSettings(BaseSettings):
     share_screen: bool = True
     screen_fps: float = 1.0
     screen_monitor: int = 1
+    # Opt-in streaming savings: identical JPEG bytes are suppressed until the
+    # heartbeat refresh interval. Capture cadence and image fidelity stay fixed.
+    screen_deduplicate: bool = False
     # How screen frames reach the model. "stream" is the continuous
     # ``screen_fps`` feed; "on_demand" sends a frame after each computer-use
     # action, on request, and on a slow heartbeat.
@@ -295,11 +300,14 @@ class AppSettings(BaseSettings):
     # Ambient frame cadence in on-demand mode: keeps the model roughly aware of
     # the screen between actions without billing a frame every second.
     frame_heartbeat_seconds: float = 8.0
-    # Floor on the spacing between any two frames, whatever asked for them.
+    # Ambient frame floor. User requests bypass it to inspect the current screen
+    # promptly (retaining dedup); post-action observation bypasses both gates.
     frame_min_interval_seconds: float = 0.5
     input_device: str | None = None  # explicit sounddevice input name
     output_device: str | None = None  # explicit sounddevice output name
     half_duplex: bool = True
+    # Keep the established default until representative latency/quality trials.
+    audio_chunk_duration_ms: int = 100
     vad_prefix_padding_ms: int = 30
     vad_silence_duration_ms: int = 500
     # Skips the confirmation prompt for destructive tools (write_file,
@@ -380,6 +388,13 @@ class AppSettings(BaseSettings):
         if value <= 0:
             msg = f"screen_fps must be greater than 0 (got {value})"
             raise ValueError(msg)
+        return value
+
+    @field_validator("audio_chunk_duration_ms")
+    @classmethod
+    def _validate_audio_chunk_duration_ms(cls, value: int) -> int:
+        if value not in (20, 40, 100):
+            raise ValueError("audio_chunk_duration_ms must be 20, 40 or 100")
         return value
 
     @field_validator("frame_mode")
@@ -474,10 +489,14 @@ class AppSettings(BaseSettings):
         )
 
     @classmethod
-    def load(cls, **overrides: Any) -> AppSettings:
+    def load(
+        cls, *, _fallbacks: dict[str, Any] | None = None, **overrides: Any
+    ) -> AppSettings:
         """Load settings from the user settings file, env vars, and optional overrides.
 
-        Precedence (lowest to highest): defaults < settings.json < env vars < overrides.
+        Precedence: model defaults < launch fallbacks < settings.json < env vars
+        < explicit overrides. Launch fallbacks keep first-run CLI defaults without
+        replacing preferences the user saved in the desktop UI.
         """
         settings_dir = Path(user_config_dir("GeminiLiveAgent", appauthor=False))
         settings_file = settings_dir / "settings.json"
@@ -513,7 +532,10 @@ class AppSettings(BaseSettings):
         # Apply file values only when the corresponding env var is not set, so
         # env vars override the settings file. Init kwargs override everything.
         env_prefix = cls.model_config.get("env_prefix", "")
-        effective: dict[str, Any] = {}
+        effective: dict[str, Any] = {
+            key: value for key, value in (_fallbacks or {}).items()
+            if f"{env_prefix}{key.upper()}" not in os.environ
+        }
         for key, value in file_values.items():
             if key in overrides:
                 continue

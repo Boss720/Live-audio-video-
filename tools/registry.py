@@ -122,7 +122,11 @@ class ComputerDragArgs(BaseModel):
 class ComputerScrollArgs(BaseModel):
     """Arguments for ``computer_scroll``."""
 
-    direction: str = Field(..., description="Scroll direction: up, down, left, or right.")
+    direction: str = Field(
+        ...,
+        description="Scroll direction: up, down, left, or right.",
+        json_schema_extra={"enum": ["up", "down", "left", "right"]},
+    )
     amount: int = Field(3, ge=1, le=100, description="Wheel clicks to scroll (1-100).")
     x: int | None = Field(
         None, ge=0, le=1000, description=_COORD_X + " Optional; provide with y."
@@ -175,6 +179,18 @@ def _build_schema(model: type[BaseModel]) -> types.Schema:
             schema.description = field_info.description
         if field_info.default is not None and not field_info.is_required():
             schema.default = field_info.default
+        extra = field_info.json_schema_extra
+        if isinstance(extra, dict):
+            enum_values = extra.get("enum")
+            if isinstance(enum_values, list) and all(
+                isinstance(value, str) for value in enum_values
+            ):
+                schema.enum = [value for value in enum_values if isinstance(value, str)]
+        for constraint in field_info.metadata:
+            if getattr(constraint, "ge", None) is not None:
+                schema.minimum = constraint.ge
+            if getattr(constraint, "le", None) is not None:
+                schema.maximum = constraint.le
         properties[name] = schema
         if field_info.is_required():
             required.append(name)

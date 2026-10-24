@@ -37,14 +37,17 @@ from core.dispatcher import ToolDispatcher
 from core.events import (
     API_CLOSE,
     USER_REQUEST,
+    AgentEvent,
     AudioLevel,
     ConnectionState,
     ConnectionStateChanged,
+    DiagnosticsUpdate,
     DisconnectReason,
     PartialTranscript,
     RateLimitHit,
     SessionError,
     SessionExpiring,
+    TextNotSent,
     TurnComplete,
     UsageUpdate,
 )
@@ -55,6 +58,7 @@ from media.microphone import INPUT_SAMPLE_RATE, Microphone
 from media.screen import ScreenCapture, capture_jpeg, validate_monitor
 from media.speaker import Speaker
 from obs.logging_setup import get_logger
+from obs.metrics import RuntimeMetrics
 from persist.store import Store
 from policy import PolicyEngine
 from settings.secrets import get_api_key
@@ -426,6 +430,8 @@ class LiveSession:
         # for the next heartbeat. Strong refs: asyncio only holds weak ones.
         self._frame_tasks: set[asyncio.Task[Any]] = set()
         self._frame_lock = asyncio.Lock()
+        self._user_frame_task: asyncio.Task[bool] | None = None
+        self._frame_utterance = 0
         self._frame_sent_this_utterance = False
         self._shutdown_event = asyncio.Event()
         self._mic_gate_open = True
@@ -438,6 +444,10 @@ class LiveSession:
         self._text_turn_pending = False
         self._turn_evaluated = False
         self._turn_gated = False
+        self._turn_events: asyncio.Queue[tuple[AgentEvent, float] | None] = asyncio.Queue()
+        self._undecided_turn_events: list[AgentEvent] = []
+        self._metrics = RuntimeMetrics()
+        self._last_video_sent_at: float | None = None
 
     async def run(self) -> DisconnectReason:
         """Connect to the API, spawn loops, and return when the session ends."""
@@ -522,6 +532,12 @@ class LiveSession:
                 respond_callback = self._make_respond_callback(session)
             self._dispatcher.set_respond_callback(respond_callback)
 
+        tasks: set[asyncio.Task[Any]] = set()
+        self._turn_state.set_timer_callback(self._queue_turn_events)
+        transcript_task = asyncio.create_task(
+            self._deliver_turn_events(), name="transcript_delivery"
+        )
+        tasks.add(transcript_task)
         try:
             if self._audio_output_available() and self._speaker is None:
                 self._speaker = Speaker(device=self._settings.output_device)
@@ -532,7 +548,10 @@ class LiveSession:
                 and self._audio_input_available()
                 and self._mic is None
             ):
-                self._mic = Microphone(device=self._settings.input_device)
+                self._mic = Microphone(
+                    device=self._settings.input_device,
+                    chunk_duration_ms=self._settings.audio_chunk_duration_ms,
+                )
                 await self._mic.start()
 
             wants_screen = (
@@ -551,13 +570,13 @@ class LiveSession:
                 )
                 await self._screen.start()
 
-            tasks: set[asyncio.Task[Any]] = set()
             tasks.add(
                 asyncio.create_task(
                     self._receive_loop(session),
                     name="receive",
                 )
             )
+            tasks.add(asyncio.create_task(self._diagnostics_loop(), name="runtime_diagnostics"))
             tasks.add(
                 asyncio.create_task(
                     self._send_loop(session),
@@ -612,6 +631,8 @@ class LiveSession:
             await self._stop_media()
 
             for task in pending:
+                if task is transcript_task:
+                    continue
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
@@ -622,12 +643,19 @@ class LiveSession:
             await self._send_audio_stream_end(session)
 
             # Flush any partial transcript that arrived just before close.
-            for event in self._turn_state.flush():
-                await self._emit(event)
+            self._turn_state.set_timer_callback(None)
+            self._queue_turn_events(self._turn_state.flush())
+            self._undecided_turn_events.clear()
+            if not transcript_task.done():
+                self._turn_events.put_nowait(None)
+                await transcript_task
 
             return reason
 
         finally:
+            self._turn_state.set_timer_callback(None)
+            self._turn_state.flush()  # Cancel timers even when the session is cancelled.
+            self._undecided_turn_events.clear()
             self._shutdown_event.set()
             for t in list(self._frame_tasks):
                 t.cancel()
@@ -639,6 +667,45 @@ class LiveSession:
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await t
             await self._stop_media()
+
+    def _queue_turn_events(self, events: list[AgentEvent]) -> None:
+        """Resolve wake gating before queuing transcript events in arrival order."""
+        if self._settings.wake_word_enabled and not self._turn_evaluated:
+            for event in events:
+                if isinstance(event, (PartialTranscript, TurnComplete)):
+                    self._undecided_turn_events.append(event)
+                else:
+                    self._turn_events.put_nowait((event, self._metrics.stamp()))
+            return
+        events = self._undecided_turn_events + events
+        self._undecided_turn_events.clear()
+        for event in events:
+            if self._turn_gated and isinstance(event, (PartialTranscript, TurnComplete)):
+                continue
+            self._turn_events.put_nowait((event, self._metrics.stamp()))
+
+    async def _deliver_turn_events(self) -> None:
+        """Serialize timer and packet events, including final-turn persistence."""
+        while True:
+            queued = await self._turn_events.get()
+            try:
+                if queued is None:
+                    return
+                event, queued_at = queued
+                await self._emit(event)
+                # This measures local publish delay, excluding coalescing/VAD.
+                self._metrics.record_elapsed("transcript_queue_ms", queued_at)
+                if isinstance(event, TurnComplete):
+                    self._store.append_turn(
+                        f"{self._run_id}-{self._epoch}-{event.source.value}-{event.turn_id}",
+                        self._run_id,
+                        event.source.value,
+                        event.text,
+                        datetime.now(UTC).isoformat(),
+                        self._epoch,
+                    )
+            finally:
+                self._turn_events.task_done()
 
     def _evaluate_wake_gate_if_needed(self) -> bool:
         """Evaluate wake-word addressing if not already evaluated for this turn.
@@ -664,7 +731,9 @@ class LiveSession:
             )
             if not addressed:
                 self._turn_gated = True
+                self._queue_turn_events([])
                 return True
+            self._queue_turn_events([])
         return False
 
     def _update_wake_gate(self, server_content: Any) -> bool:
@@ -709,6 +778,7 @@ class LiveSession:
         try:
             while not self._shutdown_event.is_set():
                 async for response in session.receive():
+                    received_at = self._metrics.stamp()
                     if self._shutdown_event.is_set():
                         break
 
@@ -761,7 +831,6 @@ class LiveSession:
                             and server_content.input_transcription
                             and server_content.input_transcription.text
                         ):
-                            self._frame_sent_this_utterance = True
                             self._spawn_frame(session, reason="user_turn")
 
                         # Wake-word gate: a voice turn that never addressed us
@@ -797,26 +866,9 @@ class LiveSession:
                         events = self._turn_state.consume_server_content(
                             turn_state_content
                         )
-                        for event in events:
-                            if (
-                                gated
-                                and isinstance(event, (PartialTranscript, TurnComplete))
-                            ):
-                                continue  # gated turn: drop bubbles and persistence
-                            await self._emit(event)
-                            if isinstance(event, TurnComplete):
-                                completed_at = datetime.now(UTC).isoformat()
-                                unique_id = (
-                                    f"{self._run_id}-{self._epoch}-{event.source.value}-{event.turn_id}"
-                                )
-                                self._store.append_turn(
-                                    unique_id,
-                                    self._run_id,
-                                    event.source.value,
-                                    event.text,
-                                    completed_at,
-                                    self._epoch,
-                                )
+                        if _should_reset_turn_gate(self._settings.model, server_content):
+                            self._evaluate_wake_gate_if_needed()
+                        self._queue_turn_events(events)
 
                         # Play audio contained in the model turn.
                         model_turn = server_content.model_turn
@@ -829,7 +881,11 @@ class LiveSession:
                             for part in model_turn.parts:
                                 inline_data = getattr(part, "inline_data", None)
                                 if inline_data and inline_data.data:
-                                    self._speaker.write(inline_data.data)
+                                    with self._metrics.measure("audio_enqueue_ms"):
+                                        self._speaker.write(inline_data.data)
+                                    self._metrics.record_elapsed(
+                                        "receive_to_audio_queue_ms", received_at
+                                    )
 
                     # Tool calls are handled off the receive path so approvals and
                     # blocking operations cannot stall message handling. A gated
@@ -880,7 +936,9 @@ class LiveSession:
                     if server_content and _should_reset_turn_gate(
                         self._settings.model, server_content
                     ):
+                        self._queue_turn_events(self._turn_state.flush())
                         self._reset_wake_gate()
+                        self._frame_utterance += 1
                         self._frame_sent_this_utterance = False
 
                     usage = response.usage_metadata
@@ -943,6 +1001,7 @@ class LiveSession:
                         )
                         await self._emit(usage_event)
                         self._record_usage(usage_event)
+                        await self._emit(self.runtime_diagnostics())
 
         except asyncio.CancelledError:
             return None
@@ -964,6 +1023,27 @@ class LiveSession:
                     return USER_REQUEST
 
                 if isinstance(cmd, SendText):
+                    if (
+                        self._settings.frame_mode == "on_demand"
+                        and (self._settings.share_screen or self._settings.computer_use_enabled)
+                    ):
+                        # Every typed turn can refer to the screen; inspect it
+                        # before forwarding text, without guessing its meaning.
+                        refreshed = await asyncio.shield(
+                            self._spawn_frame(session, reason="user_turn")
+                        )
+                        if not refreshed:
+                            await self._emit(
+                                SessionError(
+                                    message=("Could not refresh the screen; "
+                                             "text was not sent. Try again."),
+                                    fatal=False,
+                                )
+                            )
+                            await self._emit(TextNotSent(
+                                text=cmd.text, reason="Could not refresh the screen"
+                            ))
+                            continue
                     # TODO(Gemini 3.1): the docs suggest live text input may need
                     # to go through ``send_realtime_input`` rather than
                     # ``send_client_content``. Verify against a live socket.
@@ -1105,13 +1185,16 @@ class LiveSession:
                 if not self._mic_gate_open:
                     continue
                 try:
-                    await session.send_realtime_input(
-                        audio=types.Blob(
-                            data=chunk,
-                            mime_type=f"audio/pcm;rate={INPUT_SAMPLE_RATE}",
+                    with self._metrics.measure("audio_send_ms"):
+                        await session.send_realtime_input(
+                            audio=types.Blob(
+                                data=chunk,
+                                mime_type=f"audio/pcm;rate={INPUT_SAMPLE_RATE}",
+                            )
                         )
-                    )
                     self._audio_streamed = True
+                    self._metrics.increment("audio_chunks_sent")
+                    self._metrics.increment("audio_bytes_sent", len(chunk))
                 except Exception as exc:
                     logger.warning("Audio send failed: %s", exc)
                     await asyncio.sleep(0.1)
@@ -1164,9 +1247,17 @@ class LiveSession:
             while not self._shutdown_event.is_set():
                 try:
                     frame = await screen.read_frame()
-                    await session.send_realtime_input(
-                        video=types.Blob(data=frame, mime_type="image/jpeg")
-                    )
+                    previous_send = self._last_frame_sent
+                    async with self._frame_lock:
+                        # A requested observation that won the lock has already
+                        # replaced this queued stream frame with newer context.
+                        if previous_send != self._last_frame_sent:
+                            continue
+                        await self._send_frame_bytes(
+                            session, frame,
+                            force=not self._settings.screen_deduplicate,
+                            refresh=self._settings.screen_deduplicate,
+                        )
                     consecutive_errors = 0
                 except asyncio.CancelledError:
                     break
@@ -1239,9 +1330,10 @@ class LiveSession:
     async def _send_frame(self, session: Any, *, reason: str, force: bool = False) -> bool:
         """Send at most one screen frame, shared by every frame trigger.
 
-        Two gates keep the context small: a floor on the interval between any
-        two frames, and a digest check that drops a frame identical to the last
-        one sent — an idle screen costs nothing. ``force`` bypasses both, and
+        Ambient captures have a minimum interval. User turns bypass that floor
+        to check the current screen even just after a heartbeat, but retain the
+        digest check. This can send changed frames closer together in exchange
+        for prompt user context. ``force`` bypasses both gates, and
         is used for the post-action frame: that frame is the model's only way
         to see what its action did, including an action that changed nothing,
         and it must not be lost because a heartbeat happened to fire just
@@ -1251,38 +1343,70 @@ class LiveSession:
             now = time.monotonic()
             if (
                 not force
+                and reason != "user_turn"
                 and now - self._last_frame_sent < self._settings.frame_min_interval_seconds
             ):
                 return False
 
-            frame = await asyncio.to_thread(capture_jpeg, self._screen_monitor)
-            digest = hashlib.blake2b(frame, digest_size=16).digest()
-            if not force and digest == self._last_frame_digest:
-                logger.debug("[SCREEN] frame unchanged, not sent (%s)", reason)
-                return False
+            with self._metrics.measure("frame_capture_ms"):
+                frame = await asyncio.to_thread(capture_jpeg, self._screen_monitor)
+            sent = await self._send_frame_bytes(session, frame, force=force)
+            logger.debug("[SCREEN] frame checked (%s, sent=%s)", reason, sent)
+            return sent
 
+    async def _send_frame_bytes(
+        self, session: Any, frame: bytes, *, force: bool = False, refresh: bool = False
+    ) -> bool:
+        """Send under ``_frame_lock``; commit digest/metrics only after success."""
+        digest = hashlib.blake2b(frame, digest_size=16).digest()
+        refresh_due = (
+            refresh
+            and time.monotonic() - self._last_frame_sent >= self._settings.frame_heartbeat_seconds
+        )
+        if not force and not refresh_due and digest == self._last_frame_digest:
+            self._metrics.increment("frame_duplicates_dropped")
+            return False
+
+        with self._metrics.measure("frame_send_ms"):
             await session.send_realtime_input(
                 video=types.Blob(data=frame, mime_type="image/jpeg")
             )
-            self._last_frame_sent = now
-            self._last_frame_digest = digest
-            logger.debug("[SCREEN] frame sent (%s, %d bytes)", reason, len(frame))
-            return True
+        self._last_video_sent_at = self._metrics.stamp()
+        self._metrics.increment("frames_sent")
+        self._metrics.increment("frame_bytes_sent", len(frame))
+        self._last_frame_sent = time.monotonic()
+        self._last_frame_digest = digest
+        return True
 
-    def _spawn_frame(self, session: Any, *, reason: str) -> None:
-        """Fire a frame send off the receive loop, ignoring failures."""
+    def _spawn_frame(self, session: Any, *, reason: str) -> asyncio.Task[bool]:
+        """Coalesce pending user captures and leave failed utterances retryable."""
+        if (
+            reason == "user_turn"
+            and self._user_frame_task is not None
+            and not self._user_frame_task.done()
+        ):
+            return self._user_frame_task
+        utterance = self._frame_utterance
 
-        async def send() -> None:
+        async def send() -> bool:
             try:
                 await self._send_frame(session, reason=reason)
+                if reason == "user_turn" and utterance == self._frame_utterance:
+                    # An unchanged frame is a successful freshness check too.
+                    self._frame_sent_this_utterance = True
+                return True
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.warning("Frame send failed (%s): %s", reason, exc)
+                return False
 
-        task = asyncio.ensure_future(send())
+        task = asyncio.create_task(send(), name=f"frame_{reason}")
+        if reason == "user_turn":
+            self._user_frame_task = task
         self._frame_tasks.add(task)
         task.add_done_callback(self._frame_tasks.discard)
+        return task
 
     async def _push_fresh_frame(self, session: Any) -> None:
         """Send a one-shot screenshot after a computer-use action.
@@ -1419,6 +1543,29 @@ class LiveSession:
     async def _emit(self, event: Any) -> None:
         await self._event_queue.put(event)
 
+    def runtime_diagnostics(self) -> DiagnosticsUpdate:
+        """Snapshot local spans and media queues without retaining user content."""
+        audio: dict[str, float] = {}
+        for name, media in (("mic", self._mic), ("speaker", self._speaker)):
+            for key, value in getattr(media, "diagnostics", {}).items():
+                audio[f"{name}.{key}"] = float(value)
+        if self._last_video_sent_at is not None:
+            audio["last_frame_send_age_ms"] = max(
+                0.0, self._metrics.stamp() - self._last_video_sent_at
+            ) * 1000
+        return DiagnosticsUpdate(
+            timings=self._metrics.snapshot(), audio=audio, counters=self._metrics.counters()
+        )
+
+    async def _diagnostics_loop(self) -> None:
+        """Sample local event-loop lag once per second; publish with usage only."""
+        while not self._shutdown_event.is_set():
+            due = self._metrics.stamp() + 1.0
+            try:
+                await asyncio.wait_for(self._shutdown_event.wait(), timeout=1.0)
+            except TimeoutError:
+                self._metrics.record_elapsed("loop_lag_ms", due)
+
     def _record_usage(self, event: UsageUpdate) -> None:
         """Persist non-zero usage modalities as incremental history rows."""
         recorded_at = datetime.now(UTC).isoformat()
@@ -1437,11 +1584,13 @@ class LiveSession:
             "audio": (event.audio_tokens, 0.0),
             "video": (event.video_tokens, 0.0),
         }
-        for modality, (tokens, modality_usd) in modalities.items():
-            if tokens:
-                self._store.record_usage(
-                    self._run_id, modality, tokens, modality_usd, recorded_at
-                )
+        rows = [
+            (modality, tokens, modality_usd)
+            for modality, (tokens, modality_usd) in modalities.items()
+            if tokens
+        ]
+        with self._metrics.measure("usage_persist_ms"):
+            self._store.record_usage_batch(self._run_id, rows, recorded_at)
 
     async def _send_audio_stream_end(self, session: Any) -> None:
         """Best-effort ``audio_stream_end`` marker so VAD finalizes promptly.
@@ -1465,6 +1614,7 @@ class LiveSession:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             self._frame_tasks.clear()
+        self._user_frame_task = None
 
         if self._screen is not None and self._owns_screen:
             try:

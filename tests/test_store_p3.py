@@ -68,9 +68,35 @@ def test_get_turns_returns_order_and_epoch(store: Store) -> None:
 
     turns = store.get_turns(run_id, limit=2)
     assert turns == [
-        ("user", "hello", 0),
         ("model", "hi", 1),
+        ("user", "bye", 2),
     ]
+
+
+def test_get_turns_defaults_to_latest_100_in_chronological_order(store: Store) -> None:
+    completed_at = datetime(2026, 1, 1, tzinfo=UTC)
+    # Insert backwards so chronological order cannot accidentally be insertion order.
+    for index in reversed(range(120)):
+        store.append_turn(
+            f"t{index}", "run-1", "user", str(index),
+            (completed_at + timedelta(seconds=index)).isoformat(), index,
+        )
+    store.append_turn("other", "other-run", "user", "other", _iso(timedelta()), 999)
+
+    turns = store.get_turns("run-1")
+
+    assert turns == [("user", str(index), index) for index in range(20, 120)]
+
+
+def test_get_turns_equal_timestamps_select_latest_insertions(store: Store) -> None:
+    completed_at = _iso(timedelta())
+    for index in range(5):
+        store.append_turn(f"t{index}", "run-1", "model", str(index), completed_at, index)
+
+    assert store.get_turns("run-1", limit=3) == [
+        ("model", "2", 2), ("model", "3", 3), ("model", "4", 4),
+    ]
+    assert store.get_turns("run-1", limit=0) == []
 
 
 def test_get_recent_tool_results_returns_completed_rows(store: Store) -> None:

@@ -362,10 +362,13 @@ class Supervisor:
                     turn_complete=True,
                 )
 
-        pending = self._pending_tool_results
-        self._pending_tool_results = []
+        # Snapshot the batch, but retain ownership until each delivery succeeds.
+        # A failed/cancelled replay leaves that result and its successors queued;
+        # results appended during the awaits remain queued for the next batch.
+        pending = list(self._pending_tool_results)
         for call_id, name, result in pending:
             await self._deliver_tool_result(live_session, call_id, name, result)
+            self._pending_tool_results.pop(0)
 
     async def _respond_to_model(
         self, call_id: str, name: str, result: ToolResult
@@ -432,7 +435,10 @@ class Supervisor:
             and self._audio_input_available()
             and self._mic is None
         ):
-            self._mic = Microphone(device=self._settings.input_device)
+            self._mic = Microphone(
+                device=self._settings.input_device,
+                chunk_duration_ms=self._settings.audio_chunk_duration_ms,
+            )
             await self._mic.start()
 
         if self._audio_output_available() and self._speaker is None:

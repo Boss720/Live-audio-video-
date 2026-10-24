@@ -36,10 +36,11 @@ class Speaker:
     header not prepared", "media data is still playing") and the native
     crash that tearing a stream down mid-write could cause.
 
-    Thread-safety: the callback only reads ``self._generation`` and swaps
-    ``self._pending`` via atomic (GIL-protected) assignments; ``flush()`` may
-    run on the asyncio thread. Worst case, one stale chunk plays out after a
-    flush — a few tens of milliseconds.
+    Thread-safety: queue, generation, pending audio, and diagnostic counters
+    share a short lock. The callback performs no logging, RMS calculation,
+    or I/O while holding it. Flush swaps the queue rather than walking the
+    backlog under the lock. Audio already handed to PortAudio can play for
+    one callback period after a flush.
     """
 
     def __init__(
@@ -60,6 +61,11 @@ class Speaker:
         self._lock = threading.Lock()
         self._generation = 0
         self._pending = b""  # unconsumed remainder of the current chunk
+        self._queued_bytes = 0  # includes the pending remainder
+        self._high_water_bytes = 0
+        self._played_bytes = 0
+        self._underruns = 0
+        self._callback_status_count = 0
 
         self._last_level = 0.0
         self._level_lock = threading.Lock()
@@ -77,15 +83,19 @@ class Speaker:
             callback=self._audio_callback,
         )
         self._stream.start()
-        self._active = True
+        with self._lock:
+            self._active = True
         logger.info("[SPK] Speaker active")
 
     async def stop(self) -> None:
-        """Stop and close the speaker output stream."""
+        """Stop, discard unsent PCM, and close the speaker output stream.
+
+        Lifetime diagnostic counters are preserved across stop/start.
+        """
+        self._discard_backlog(deactivate=True)
         if self._stream is None:
             return
 
-        self._active = False
         try:
             self._stream.stop()
         except Exception as exc:  # pragma: no cover - defensive
@@ -99,13 +109,20 @@ class Speaker:
 
     def write(self, pcm_bytes: bytes) -> None:
         """Queue PCM audio for playback. Never blocks the async loop."""
-        if not self._active:
+        if not pcm_bytes:
             return
+        with self._lock:
+            if not self._active:
+                return
+            generation = self._generation
 
         self._update_level(pcm_bytes)
         with self._lock:
-            generation = self._generation
-        self._queue.put((generation, pcm_bytes))
+            if not self._active or generation != self._generation:
+                return
+            self._queue.put_nowait((generation, pcm_bytes))
+            self._queued_bytes += len(pcm_bytes)
+            self._high_water_bytes = max(self._high_water_bytes, self._queued_bytes)
 
     def flush(self) -> None:
         """Drop all pending audio immediately, e.g. on barge-in.
@@ -114,22 +131,29 @@ class Speaker:
         the partially consumed remainder, so the stream falls silent within
         one callback period — no abort/close/recreate of the native stream.
         """
+        self._discard_backlog()
+        logger.info("[SPK] Playback flushed (barge-in)")
+
+    def _discard_backlog(self, *, deactivate: bool = False) -> None:
+        """Invalidate writes crossing a flush/stop and release unsent PCM."""
+        replacement: queue.Queue[tuple[int, bytes]] = queue.Queue()
         with self._lock:
+            if deactivate:
+                self._active = False
             self._generation += 1
-        self._pending = b""
-        while True:
-            try:
-                self._queue.get_nowait()
-            except queue.Empty:
-                break
+            previous_queue, self._queue = self._queue, replacement
+            self._pending = b""
+            self._queued_bytes = 0
+        # Release the old backlog outside the callback's critical section.
+        del previous_queue
         with self._level_lock:
             self._last_level = 0.0
-        logger.info("[SPK] Playback flushed (barge-in)")
 
     @property
     def is_playing(self) -> bool:
         """Return whether the speaker output stream is active."""
-        return self._active
+        with self._lock:
+            return self._active
 
     @property
     def level(self) -> float:
@@ -137,28 +161,53 @@ class Speaker:
         with self._level_lock:
             return self._last_level
 
-    # -- PortAudio callback (real-time thread; never blocks) --
+    @property
+    def diagnostics(self) -> dict[str, float]:
+        """Return a coherent snapshot with counters cumulative per instance.
+
+        ``played_ms`` counts PCM handed to PortAudio, excluding silence; it
+        is not a hardware playback clock. ``underruns`` counts callbacks
+        padded with silence, including ordinary idle callbacks.
+        """
+        milliseconds_per_byte = 1000 / (OUTPUT_SAMPLE_RATE * _BYTES_PER_FRAME)
+        with self._lock:
+            return {
+                "queued_ms": self._queued_bytes * milliseconds_per_byte,
+                "high_water_ms": self._high_water_bytes * milliseconds_per_byte,
+                "played_ms": self._played_bytes * milliseconds_per_byte,
+                "underruns": float(self._underruns),
+                "callback_status_count": float(self._callback_status_count),
+            }
+
+    # -- PortAudio callback (real-time thread; no blocking I/O) --
 
     def _audio_callback(self, outdata: Any, frames: int, _time: Any, status: Any) -> None:
         """Fill ``outdata`` with queued PCM, or silence when nothing is queued."""
-        if status:
-            logger.warning("Speaker callback status: %s", status)
-
         need = frames * _BYTES_PER_FRAME
         pos = 0
-        while pos < need:
-            if not self._pending:
-                try:
-                    generation, chunk = self._queue.get_nowait()
-                except queue.Empty:
-                    break  # underrun: the rest of the buffer stays silent
-                if generation != self._generation or not self._active:
-                    continue
-                self._pending = chunk
-            take = min(need - pos, len(self._pending))
-            outdata[pos : pos + take] = self._pending[:take]
-            self._pending = self._pending[take:]
-            pos += take
+        with self._lock:
+            if status:
+                self._callback_status_count += 1
+            while pos < need:
+                if not self._pending:
+                    try:
+                        generation, chunk = self._queue.get_nowait()
+                    except queue.Empty:
+                        break  # underrun: the rest of the buffer stays silent
+                    if generation != self._generation:
+                        continue
+                    if not self._active:
+                        self._queued_bytes = max(0, self._queued_bytes - len(chunk))
+                        continue
+                    self._pending = chunk
+                take = min(need - pos, len(self._pending))
+                outdata[pos : pos + take] = self._pending[:take]
+                self._pending = self._pending[take:]
+                self._queued_bytes = max(0, self._queued_bytes - take)
+                self._played_bytes += take
+                pos += take
+            if pos < need:
+                self._underruns += 1
 
         if pos < need:
             outdata[pos:need] = b"\x00" * (need - pos)

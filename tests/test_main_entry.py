@@ -73,3 +73,67 @@ def test_guard_is_a_noop_when_not_frozen(monkeypatch: Any, tmp_path: Path) -> No
     monkeypatch.delattr(sys, "frozen", raising=False)
     settings = AppSettings(working_dir=tmp_path, workspace_root=tmp_path)
     assert _guard_frozen_workspace(settings) is settings
+
+
+def _capture_startup(monkeypatch: Any, argv: list[str]) -> AppSettings:
+    import main
+
+    captured: list[AppSettings] = []
+    monkeypatch.setattr(sys, "argv", ["main.py", *argv])
+    monkeypatch.setattr(main, "migrate_dotenv", lambda: False)
+    monkeypatch.setattr(main, "get_api_key", lambda: "fake-startup-key")
+    monkeypatch.setattr(main, "get_free_api_key", lambda: None)
+    monkeypatch.setattr(main, "_with_tier_keys", lambda settings: settings)
+    monkeypatch.setattr("app.main_window.run_gui", lambda settings: captured.append(settings) or 0)
+    monkeypatch.setitem(AppSettings.model_config, "env_file", None)
+    assert main.main() == 0
+    return captured[0]
+
+
+def test_startup_preserves_saved_preferences_without_explicit_flags(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    saved = AppSettings(
+        _env_file=None, model="gemini-3.8-live", voice="Kore", mode="text",
+        working_dir=tmp_path, workspace_root=tmp_path, screen_fps=2.0, screen_monitor=2,
+        yolo=False, share_screen=False,
+    )
+    saved.save()
+    loaded = _capture_startup(monkeypatch, [])
+    for name in ("model", "voice", "mode", "working_dir", "workspace_root", "screen_fps",
+                 "screen_monitor", "yolo", "share_screen"):
+        assert getattr(loaded, name) == getattr(saved, name), name
+
+
+def test_explicit_flags_override_saved_preferences(monkeypatch: Any, tmp_path: Path) -> None:
+    AppSettings(
+        _env_file=None, model="gemini-3.8-live", voice="Kore", mode="text",
+        working_dir=tmp_path, workspace_root=tmp_path,
+    ).save()
+    explicit = tmp_path / "explicit"
+    explicit.mkdir()
+    loaded = _capture_startup(monkeypatch, [
+        "--model", "custom-live", "--voice", "Puck", "--mode", "both",
+        "--working-dir", str(explicit), "--screen-fps", "3", "--monitor", "1",
+    ])
+    assert (loaded.model, loaded.voice, loaded.mode) == ("custom-live", "Puck", "both")
+    assert loaded.working_dir == loaded.workspace_root == explicit
+    assert loaded.screen_fps == 3.0
+    assert loaded.screen_monitor == 1
+
+
+def test_first_start_keeps_guarded_share_off_defaults(monkeypatch: Any) -> None:
+    loaded = _capture_startup(monkeypatch, [])
+    assert not loaded.yolo
+    assert not loaded.share_screen
+    assert not loaded.headless
+
+
+def test_negative_flags_override_saved_approval_and_share_preferences(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    AppSettings(_env_file=None, working_dir=tmp_path, workspace_root=tmp_path,
+                yolo=True, share_screen=True).save()
+    loaded = _capture_startup(monkeypatch, ["--no-yolo", "--no-share-screen"])
+    assert not loaded.yolo
+    assert not loaded.share_screen

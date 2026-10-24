@@ -52,6 +52,7 @@ excludes = [
     "PySide6.QtVirtualKeyboard",
     # Dev-only tools that must never ship.
     "pytest",
+    "_pytest",
     "pytestqt",
     "mypy",
     "ruff",

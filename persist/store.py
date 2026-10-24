@@ -234,13 +234,24 @@ class Store:
         recorded_at: str,
     ) -> None:
         """Record token usage for a modality."""
+        self.record_usage_batch(run_id, [(modality, tokens, usd)], recorded_at)
+
+    def record_usage_batch(
+        self,
+        run_id: str,
+        rows: list[tuple[str, int, float]],
+        recorded_at: str,
+    ) -> None:
+        """Record several modality usage rows atomically."""
+        if not rows:
+            return
         with self._conn:
-            self._conn.execute(
+            self._conn.executemany(
                 """
                 INSERT INTO usage (run_id, modality, tokens, usd, recorded_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (run_id, modality, tokens, usd, recorded_at),
+                [(run_id, modality, tokens, usd, recorded_at) for modality, tokens, usd in rows],
             )
 
     def get_usage(self, run_id: str) -> list[tuple[str, int, float, str]]:
@@ -339,14 +350,18 @@ class Store:
             )
 
     def get_turns(self, run_id: str, limit: int = 100) -> list[tuple[str, str, int]]:
-        """Return completed turns for a run ordered by completion time."""
+        """Return the latest bounded turns in chronological/insertion order."""
         rows = self._conn.execute(
             """
             SELECT role, text, epoch
-            FROM turns
-            WHERE run_id = ?
-            ORDER BY completed_at ASC
-            LIMIT ?
+            FROM (
+                SELECT role, text, epoch, completed_at, rowid
+                FROM turns
+                WHERE run_id = ?
+                ORDER BY completed_at DESC, rowid DESC
+                LIMIT ?
+            )
+            ORDER BY completed_at ASC, rowid ASC
             """,
             (run_id, limit),
         ).fetchall()

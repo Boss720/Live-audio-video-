@@ -13,6 +13,7 @@ from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from google.genai import errors, types
@@ -481,6 +482,62 @@ async def test_tool_result_finished_during_reconnect_is_delivered(
     await command_queue.put(Disconnect())
     reason = await task
     assert reason.code == "user_request"
+
+
+@pytest.mark.asyncio
+async def test_replay_retains_failed_unattempted_and_new_results_until_reconnect(
+    settings: AppSettings,
+    command_queue: asyncio.Queue[Any],
+    event_queue: asyncio.Queue[Any],
+    journal: Journal,
+    store: Store,
+    monkeypatch: Any,
+) -> None:
+    """A second broken transport must not discard the replay backlog."""
+    _patch_for_supervisor(monkeypatch, FakeLive())
+    supervisor = Supervisor(
+        settings=settings,
+        command_queue=command_queue,
+        event_queue=event_queue,
+        journal=journal,
+        store=store,
+        run_id="replay-run",
+    )
+    submit = AsyncMock()
+    monkeypatch.setattr(supervisor._dispatcher, "submit", submit)
+    results = [ToolResult(True, f"done-{index}") for index in range(4)]
+    for index in range(3):
+        assert not await supervisor._respond_to_model(f"fc-{index}", "fake_tool", results[index])
+
+    async def send_with_partial_failure(call_id: str, name: str, result: ToolResult) -> None:
+        if call_id == "fc-0":
+            # Another completed tool queues its result while replay awaits transport.
+            assert not await supervisor._respond_to_model("fc-3", "fake_tool", results[3])
+            return
+        raise FakeSessionError("tool response transport failed")
+
+    broken_session = AsyncMock()
+    broken_session.send_tool_response.side_effect = send_with_partial_failure
+    broken_session.send_client_content.side_effect = FakeSessionError("note transport failed")
+
+    with pytest.raises(FakeSessionError, match="note transport failed"):
+        await supervisor._on_connected(broken_session)
+
+    assert [item[0] for item in supervisor._pending_tool_results] == ["fc-1", "fc-2", "fc-3"]
+    assert [call.args[0] for call in broken_session.send_tool_response.await_args_list] == [
+        "fc-0", "fc-1",
+    ]
+    broken_session.send_client_content.assert_awaited_once()
+
+    next_session = AsyncMock()
+    await supervisor._on_connected(next_session)
+
+    assert [call.args for call in next_session.send_tool_response.await_args_list] == [
+        (f"fc-{index}", "fake_tool", results[index]) for index in range(1, 4)
+    ]
+    assert supervisor._pending_tool_results == []
+    next_session.send_client_content.assert_not_awaited()
+    submit.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,7 @@ import asyncio
 import pytest
 from google.genai import types
 
-from core.events import PartialTranscript, SessionError, TranscriptSource, TurnComplete
+from core.events import AgentEvent, PartialTranscript, SessionError, TranscriptSource, TurnComplete
 from core.turn_state import TurnState
 
 
@@ -63,6 +63,7 @@ def test_emits_turn_complete_and_clears_transcript() -> None:
     assert completes == [
         TurnComplete(source=TranscriptSource.MODEL, text="hello world", turn_id=0)
     ]
+    assert events == [partials[0], completes[0]]
 
     # A new turn starts with a fresh turn id and empty transcript.
     events = ts.consume_server_content(_server_content(output_text="next"))
@@ -161,3 +162,23 @@ def test_user_turns_complete_and_advance_turn_id() -> None:
     assert len(user_completes2) == 1
     assert user_completes2[0].text == "second user turn"
     assert user_completes2[0].turn_id == 1
+
+
+@pytest.mark.asyncio
+async def test_timer_callback_delivers_coalesced_events_without_draining_again() -> None:
+    delivered: list[AgentEvent] = []
+    ready = asyncio.Event()
+
+    def receive(events: list[AgentEvent]) -> None:
+        delivered.extend(events)
+        ready.set()
+
+    ts = TurnState(coalesce_ms=10)
+    ts.set_timer_callback(receive)
+    assert ts.consume_server_content(_server_content(output_text="a")) == []
+    assert ts.consume_server_content(_server_content(output_text="b")) == []
+    await asyncio.wait_for(ready.wait(), timeout=0.5)
+    assert delivered == [PartialTranscript(text="ab", source=TranscriptSource.MODEL, turn_id=0)]
+    events = ts.consume_server_content(_server_content(turn_complete=True))
+    assert events == [TurnComplete(text="ab", source=TranscriptSource.MODEL, turn_id=0)]
+    assert ts.flush() == []

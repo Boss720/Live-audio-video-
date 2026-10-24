@@ -8,8 +8,9 @@ each call is submitted as a separate asyncio task by the session.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel
 
@@ -29,6 +30,7 @@ from persist.store import Store
 from policy import PolicyEngine, redact, redact_data
 from policy.engine import DecisionKind
 from tools.registry import (
+    COMPUTER_TOOL_NAMES,
     ComputerClickArgs,
     ComputerDragArgs,
     ComputerKeyArgs,
@@ -131,6 +133,12 @@ class ToolDispatcher:
         # to whichever session is connected when it finishes.
         self._tasks: set[asyncio.Task[Any]] = set()
 
+        # Reserve desktop slots before the first await in submit(). A cancelled
+        # waiter retains its place until its predecessor settles; otherwise a
+        # third action could overtake the action still using the desktop.
+        self._desktop_tail: asyncio.Future[None] | None = None
+        self._desktop_waiters: dict[str, asyncio.Task[Any]] = {}
+
     def spawn(self, coro: Awaitable[Any]) -> asyncio.Task[Any]:
         """Run ``coro`` as a tracked background task.
 
@@ -181,11 +189,63 @@ class ToolDispatcher:
         """
         if self._consume_cancellation(call_id):
             return
+        if name not in COMPUTER_TOOL_NAMES:
+            await self._submit(call_id, name, args)
+            return
+
+        predecessor = self._desktop_tail
+        slot: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._desktop_tail = slot
+        try:
+            if predecessor is not None and not predecessor.done():
+                task = asyncio.current_task()
+                assert task is not None
+                self._desktop_waiters[call_id] = task
+            # Hold the slot through approval, execution and the response callback
+            # (which sends the post-action frame), including denied/invalid calls.
+            await self._submit(call_id, name, args, predecessor=predecessor)
+        except asyncio.CancelledError:
+            if not self._consume_cancellation(call_id):
+                raise
+        finally:
+            self._desktop_waiters.pop(call_id, None)
+            self._call_args.pop(call_id, None)
+            self._approval_events.pop(call_id, None)
+            self._approval_results.pop(call_id, None)
+            self._approval_reasons.pop(call_id, None)
+
+            def release(_previous: asyncio.Future[None] | None = None) -> None:
+                slot.set_result(None)
+                if self._desktop_tail is slot:
+                    self._desktop_tail = None
+
+            if predecessor is not None and not predecessor.done():
+                predecessor.add_done_callback(release)
+            else:
+                release()
+
+    async def _submit(
+        self,
+        call_id: str,
+        name: str,
+        args: dict[str, Any],
+        *,
+        predecessor: asyncio.Future[None] | None = None,
+    ) -> None:
+        """Apply the existing policy, audit and response flow within a slot."""
+        if self._consume_cancellation(call_id):
+            return
 
         clean_args = redact_data(args)
         self._call_args[call_id] = clean_args
         self._journal.tool_attempt(call_id, name, clean_args, epoch=self._epoch)
         await self._emit(ToolCallReceived(call_id=call_id, name=name, args=clean_args))
+
+        if predecessor is not None and not predecessor.done():
+            # Audit receipt immediately, but shield the shared predecessor from
+            # this waiter's cancellation before policy/execution/response work.
+            await asyncio.shield(predecessor)
+        self._desktop_waiters.pop(call_id, None)
 
         # Resolve the tool implementation and argument schema.
         entry = _TOOL_TABLE.get(name)
@@ -241,6 +301,10 @@ class ToolDispatcher:
         try:
             if asyncio.iscoroutinefunction(func):
                 raw_result = await func(validated_args, call_id=call_id)
+            elif name in COMPUTER_TOOL_NAMES:
+                raw_result = await self._run_desktop_sync(
+                    cast(Callable[..., ToolResult], func), validated_args, call_id
+                )
             else:
                 raw_result = await asyncio.to_thread(func, validated_args, call_id=call_id)
         except Exception as exc:  # pragma: no cover - defensive
@@ -249,6 +313,24 @@ class ToolDispatcher:
         # Redact before it leaves the sandbox.
         result = ToolResult(raw_result.ok, redact(raw_result.message))
         await self._finish(call_id, name, result)
+
+    async def _run_desktop_sync(
+        self, func: Callable[..., ToolResult], args: BaseModel, call_id: str
+    ) -> ToolResult:
+        """Keep the desktop occupied until an uncancellable input thread exits."""
+        worker = asyncio.create_task(asyncio.to_thread(func, args, call_id=call_id))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # Cancelling to_thread cannot stop synchronous mouse/keyboard input.
+            # Retain and join this worker before releasing the lane, even during
+            # shutdown. Repeated cancellation must not orphan the worker either.
+            while not worker.done():
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await asyncio.shield(worker)
+            if not worker.cancelled():
+                worker.exception()
+            raise
 
     def approve(self, call_id: str) -> None:
         """Approve a pending tool call."""
@@ -295,6 +377,9 @@ class ToolDispatcher:
                 event.set()
 
             self._cancelled_ids.add(call_id)
+            waiter = self._desktop_waiters.get(call_id)
+            if waiter is not None:
+                waiter.cancel()
             self.spawn(shell_tools.cancel_shell(call_id))
             # Emit once, even if the id was not known to the dispatcher.
             self.spawn(

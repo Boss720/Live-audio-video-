@@ -1,5 +1,142 @@
 # Handoff & Continuation Plan
 
+## Active handoff — 24 October 2026
+
+This section supersedes historical state and counts below. Read this first after
+a context/usage reset. User authorized beginning the assessment roadmap and asked
+for a handoff before usage runs out. Initial handoff saved before implementation.
+
+- Workspace: `C:\Users\Hp\Dev\Projects\gemini-live-agents\gemini-live-agent`
+  (Windows junction may resolve to `D:\AI\projects\Dev\Projects\gemini-live-agents\gemini-live-agent`).
+- Branch: `Leroy`; baseline HEAD `dcd709786c768cf5c4c02aa90486733fa8996e99`.
+- Origin: `https://github.com/Boss720/Live-audio-video-.git`.
+- Before implementation, dirty files were the preceding assessment's
+  `PROGRESS.md` and `output/assessment-2026-10-24/` artifacts. Preserve them.
+- First correctness batch implemented and independently verified: newest
+  conversation restoration, failed result replay retention, ordered desktop
+  inputs, timer-driven transcript delivery, and nonblocking screen shutdown.
+- Latest verified source checkpoint: **406 passed, 3 skipped in 22.51s**;
+  runtime mypy 43 files and evaluation mypy 3 files passed; full Ruff clean.
+  Waves 2 and 3 completed: audio/timing diagnostics, configurable mic chunks
+  (100ms default retained), batched usage persistence, repaired scorers, screenshot
+  freshness/optional exact dedup, tool schema constraints, compact settings and
+  approval/diagnostics QoL. Saved preferences survive restart; explicit CLI flags
+  override them. Failed screen preflight returns unsent text without overwriting
+  a newer draft. All source edits remain uncommitted.
+- Final source logs: `output/implementation-wave3-2026-10-24/pytest-full.log`,
+  `mypy.log`, `mypy-eval.log`, `ruff.log`. Synthetic GUI screenshots at 720x520
+  and 1100x800 are alongside them. Earlier checkpoint counts below are historical.
+- FINAL PACKAGING OUTCOME (supersedes investigation notes below): verified
+  `dist/improvements-2026-10-24-final/gemini-live-agent/gemini-live-agent.exe`.
+  Production build and --help passed. Native disconnected window inspected,
+  raised, captured as `candidate-native-final.png` with AX state alongside it,
+  then closed via Ctrl+Q; PID45108 absence confirmed. No provider/media session.
+  Coordinator independently reran the package audit:40/40 own modules match
+  source, all15 critical present, no forbidden entries. Bundle236 files,
+  162,829,998 bytes. EXE SHA256:
+  `b1b03f3d7ce3965eea00ab8d2eaf15a3cee1659a41b113e7c401bec501f0d4cb`.
+  No diagnostic hook embedded. `package-audit.json` is the FINAL manifest;
+  `package-audit-initial.json` preserves the earlier flagged candidate.
+- Portable ZIP verified:
+  `dist/improvements-2026-10-24-final/gemini-live-agent-improvements-2026-10-24.zip`
+  (72,201,788 bytes); CRC and all236 bundle members match manifest size/SHA256.
+  ZIP SHA256: `3080339ad10a671906ab2e6e08eabb4f1416e5483e6cdfde776914ed4e09dc2a`.
+  See `portable-audit.json`. Extract the entire archive; keep EXE and `_internal`
+  together. Unreleased local candidate, existing0.3.0 version resources retained.
+  All test/diagnostic processes stopped. No active build/check remains.
+- Historical packaging investigation (completed): first candidate built at
+  `dist/improvements-2026-10-24/gemini-live-agent/gemini-live-agent.exe`, using
+  existing `packaging/gemini-live-agent.spec`, separate work/cache directories.
+  Published bundles are preserved; no installer/publication/version bump requested.
+  Build/help pass; 40/40 own modules match source (15 critical), 236 files /
+  162,835,996 bytes. Initial audit flags three `_pytest` support modules; spec
+  now excludes `_pytest`; final rebuild/audit passed as recorded above.
+  Initial sandbox GUI smoke PID43792 produced no visible window; coordinator
+  stopped that exact test process after verifying its path. No provider connection.
+  Source native/offscreen startup under isolated profile succeeds in ~5s.
+  Temporary diagnostic build completed via exec session35806, using
+  `output/implementation-wave3-2026-10-24/diagnostic.spec` and trace hook. It is
+  not a deliverable. Expected diagnostic exe:
+  `dist/improvements-2026-10-24-diagnostic/gemini-live-agent/gemini-live-agent.exe`.
+  Trace reached every stage including `show: done`; there was no constructor
+  hang. The sandbox's window was not on the normal desktop. An authorized
+  normal-filesystem launch of the original candidate PID43804 showed the native
+  window via CUA (ID4654522). Raised, visually inspected and saved screenshot
+  `candidate-native-initial.png`; closed with Ctrl+Q and process absence checked.
+  Temporary diagnostic PID48432 was also stopped after exact path verification.
+  Final build completed via exec session15519 using production spec WITHOUT hook,
+  output `dist/improvements-2026-10-24-final/` and matching `build/` path.
+  `package_audit.py --candidate <exe>` inventories all onedir files and checks40
+  own modules; worker and coordinator reruns both passed.
+- Isolated smoke launcher uses placeholder keys, text mode, disabled sharing/
+  computer control, task-owned profile/config/log/temp/workspace. Platformdirs
+  requires `WIN_PD_OVERRIDE_LOCAL_APPDATA` (APPDATA alone is insufficient).
+  `candidate_smoke.py help` passed. Native inspection uses mcp__cua_repl;
+  call `cua.rewriteDocumentation()` after compaction, inventory windows then
+  getApp by observed ID. Separate node_repl Sky initialization failed due missing
+  kernel assets, but CUA native inspection and screenshot capture work. Native
+  test launches need `require_escalated` so windows reach the normal desktop.
+- Final source gates remain406/3 with43+3 mypy and clean Ruff. Only subsequent
+  production edit is `_pytest` exclusion in packaging spec. Final package
+  manifest at `output/implementation-wave3-2026-10-24/package-audit.json`.
+  Usage checkpoint: five-hour83% used (17% remaining), weekly26% used. Handoff
+  saved before limit as requested; no resets available. Packaging/docs finished.
+- No commit/publication or live Gemini connection/media streams were performed.
+  Native candidate GUI startup used isolated config/dummy keys; no Connect action.
+- Assessment/roadmap: `output/assessment-2026-10-24/ASSESSMENT.md`.
+  Raw evidence and mockup verification are alongside it. Three mock UI concepts
+  exist; UI implementation is deferred until the core batch and measurement.
+  Workbench is the proposed default; a carousel view alone is not a decision.
+- Source of inline UI concepts:
+  `C:\Users\Hp\.codex\visualizations\2026\10\23\01a16b25-4572-7e93-87c3-59119bf03d1c\gemini-live-ui-alternatives.html`.
+- Baseline checks: 277 passed, 3 skipped; mypy runtime scope passed (42 files);
+  Ruff has one existing E501 at `settings/settings.py:71`. Synthetic diagnostics
+  reproduce bugs; do not interpret their success as fixed behavior.
+- Use `.venv\Scripts\python.exe`, not a possibly stale `uv run` trampoline.
+  Sandbox pytest temp setup failed due Windows permissions; normal-filesystem
+  full-suite rerun passed. Use a fresh workspace-owned `--basetemp` for each run,
+  and request tool escalation when necessary. Avoid recursively removing temps.
+- Final implementation checks: **297 passed, 3 skipped in 16.99s**; runtime mypy
+  passed across 42 source files. Ruff retains only baseline E501 at
+  `settings/settings.py:71`; no new findings. `git diff --check` passed.
+  Commands, regression excerpts and limitations:
+  `output/implementation-2026-10-24/VERIFICATION.md`; raw full logs alongside it.
+- Changed runtime files: `persist/store.py`, `core/supervisor.py`,
+  `core/dispatcher.py`, `core/turn_state.py`, `core/session.py`, `media/screen.py`.
+  Modified tests: `test_store_p3.py`, `test_supervisor.py`, `test_dispatcher.py`,
+  `test_turn_state.py`; new `test_screen_shutdown.py`, `test_transcript_delivery.py`.
+  Tests live under `tests/`. All implementation changes remain uncommitted.
+- New tests protect recent/equal-timestamp history, partial replay failure,
+  FIFO action/frame order, queued cancellation/denial/shutdown, single-packet
+  caption delivery, wake gating, coalescing/final order, capture stop/restart, and
+  delayed monitor validation preserving the shutdown signal after capture stops.
+- Next entry: inspect current branch/status first, then proceed with representative
+  live evaluation or the remaining roadmap as authorized. Source and local
+  candidate verification are complete. All worker source edits have finished.
+  The old assessment `diagnostic_probes.py` deliberately asserts buggy baseline
+  behavior and must not be used as a current passing gate.
+- Deferred from this narrow recovery fix: durable result outbox and compact
+  completed-tool/current-task checkpoint. Latest recent-turn reconstruction is
+  fixed, but neither restart-safe replay nor exactly-once delivery is promised.
+- Remaining roadmap: durable replay/task checkpoints, background persistence/log
+  consumers, a measured playback overload policy, representative end-to-end
+  provider/device evaluation, session history browser and optional full UI redesign.
+  Native target-focus recovery also remains. No hardware speedup/provider accuracy
+  gain should be claimed without separate live evidence.
+- Synchronous desktop input already running cannot be aborted; shutdown awaits
+  it before freeing the desktop lane. Native capture that does not stop retains
+  ownership and blocks restart on the same instance. No real-device behavior or
+  package rebuild was validated during this batch.
+- Latest usage read before dispatch: five-hour window 44% remaining; weekly 91%
+  remaining. These values are transient; query fresh limits if needed.
+- Final review found another existing monitor-switch/stop race. A failing fake
+  validation regression was captured, the sentinel is now preserved, and full
+  gates were rerun after that final source change. Exact final logs:
+  `pytest-full-reviewed.log`, `mypy-reviewed.log`, `ruff-changed.log` under
+  `output/implementation-2026-10-24/`. Baseline full Ruff evidence: `ruff.log`.
+
+## Historical handoff (older state; retained for provenance)
+
 ## Current State
 
 - **Repository:** `d:/AI/projects/Dev/Projects/gemini-live-agents/gemini-live-agent`

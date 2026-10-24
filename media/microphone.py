@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import array
 import asyncio
-import contextlib
 import math
 import threading
+import time
+from collections import deque
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -23,23 +24,39 @@ DTYPE = "int16"
 CHUNK_DURATION_MS = 100
 INPUT_CHUNK_SAMPLES = int(INPUT_SAMPLE_RATE * CHUNK_DURATION_MS / 1000)
 QUEUE_MAXSIZE = 4
+MAX_QUEUE_MS = CHUNK_DURATION_MS * QUEUE_MAXSIZE
 
 
 class Microphone:
     """Captures audio from a microphone as 16 kHz 16-bit mono PCM chunks.
 
     Captured chunks are bridged from the PortAudio callback thread to the
-    async event loop via a bounded asyncio queue. When the gate is closed,
-    chunks are discarded instead of queued.
+    async event loop via a bounded deque and coalesced wakeups. Capture age
+    includes event-loop scheduling delays. When the gate is closed, chunks
+    are discarded instead of queued.
     """
 
-    def __init__(self, device: str | int | None = None) -> None:
+    def __init__(
+        self, device: str | int | None = None, *, chunk_duration_ms: int = CHUNK_DURATION_MS
+    ) -> None:
+        if chunk_duration_ms not in (20, 40, 100):
+            raise ValueError("chunk_duration_ms must be 20, 40, or 100")
         if isinstance(device, str):
             self._device_index = devices.validate_device(device, "input")
         else:
             self._device_index = device
 
-        self._queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=QUEUE_MAXSIZE)
+        self._chunk_duration_ms = chunk_duration_ms
+        self._chunk_samples = INPUT_SAMPLE_RATE * chunk_duration_ms // 1000
+        self._queue_capacity = MAX_QUEUE_MS // chunk_duration_ms
+        self._queue: deque[tuple[float, bytes] | None] = deque()
+        self._queue_lock = threading.Lock()
+        self._ready = asyncio.Event()
+        self._wake_pending = False
+        self._level_chunk = b""
+        self._dropped_chunks = 0
+        self._callback_status_count = 0
+        self._generation = 0
         self._stream: Any | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._running = False
@@ -53,14 +70,19 @@ class Microphone:
     async def start(self) -> None:
         """Start capturing audio from the selected microphone."""
         self._loop = asyncio.get_running_loop()
-        self._running = True
+        with self._queue_lock:
+            self._generation += 1
+            self._ready = asyncio.Event()
+            self._wake_pending = False
         self._drain_queue()
+        with self._queue_lock:
+            self._running = True
 
         self._stream = sd.RawInputStream(
             samplerate=INPUT_SAMPLE_RATE,
             channels=CHANNELS,
             dtype=DTYPE,
-            blocksize=INPUT_CHUNK_SAMPLES,
+            blocksize=self._chunk_samples,
             device=self._device_index,
             callback=self._audio_callback,
         )
@@ -69,7 +91,9 @@ class Microphone:
 
     async def stop(self) -> None:
         """Stop capturing and release the microphone."""
-        self._running = False
+        with self._queue_lock:
+            self._running = False
+            generation, ready = self._generation, self._ready
 
         if self._stream is not None:
             try:
@@ -84,28 +108,67 @@ class Microphone:
 
         # Release any waiter in chunks().
         if self._loop is not None and not self._loop.is_closed():
-            self._loop.call_soon_threadsafe(self._enqueue_sentinel)
+            if self._loop is asyncio.get_running_loop():
+                self._enqueue_sentinel(generation, ready)
+            else:
+                self._loop.call_soon_threadsafe(self._enqueue_sentinel, generation, ready)
         logger.info("[MIC] Microphone stopped")
 
     async def chunks(self) -> AsyncIterator[bytes]:
         """Yield captured PCM chunks until the microphone is stopped."""
+        with self._queue_lock:
+            generation, ready = self._generation, self._ready
         while True:
-            item = await self._queue.get()
+            await ready.wait()
+            with self._queue_lock:
+                if generation != self._generation:
+                    break
+                self._expire_chunks(time.monotonic())
+                if not self._queue:
+                    ready.clear()
+                    continue
+                item = self._queue.popleft()
+                if not self._queue:
+                    ready.clear()
             if item is None:
                 break
-            yield item
+            yield item[1]
 
     def set_gate(self, open: bool) -> None:  # noqa: A002 - matches domain language
         """Open or close the audio gate.
 
-        When closed, captured chunks are discarded instead of being queued.
+        Closing also discards unsent queued PCM. Intentional mute discards
+        are excluded from the capacity/age ``dropped_chunks`` counter.
         """
-        self._gate_open = open
+        with self._queue_lock:
+            self._gate_open = open
+            if not open:
+                self._queue = deque(item for item in self._queue if item is None)
 
     @property
     def gate_open(self) -> bool:
         """Return whether the audio gate is currently open."""
-        return self._gate_open
+        with self._queue_lock:
+            return self._gate_open
+
+    @property
+    def diagnostics(self) -> dict[str, float]:
+        """Return a coherent numeric snapshot; counters last for this instance.
+
+        Age starts at callback entry (not the hardware ADC timestamp). The
+        400 ms age limit is enforced on capture and consumption; a snapshot
+        may report older queued audio while neither operation is running.
+        """
+        now = time.monotonic()
+        with self._queue_lock:
+            chunks = [item for item in self._queue if item is not None]
+            return {
+                "queued_ms": float(len(chunks) * self._chunk_duration_ms),
+                "oldest_chunk_ms": max(0.0, (now - chunks[0][0]) * 1000) if chunks else 0.0,
+                "dropped_chunks": float(self._dropped_chunks),
+                "callback_status_count": float(self._callback_status_count),
+                "chunk_duration_ms": float(self._chunk_duration_ms),
+            }
 
     @property
     def level(self) -> float:
@@ -118,42 +181,79 @@ class Microphone:
     def _audio_callback(
         self, indata: Any, frames: int, time_info: Any, status: Any
     ) -> None:
+        captured_at = time.monotonic()
         if status:
-            logger.warning("Mic callback warning: %s", status)
-
+            with self._queue_lock:
+                self._callback_status_count += 1
         chunk = bytes(indata)
-
-        if self._loop is None or self._loop.is_closed():
-            return
-
-        try:
-            self._loop.call_soon_threadsafe(self._enqueue_chunk, chunk)
-        except RuntimeError:  # pragma: no cover - event loop closed during shutdown
-            logger.debug("Failed to enqueue mic chunk: event loop closed")
+        self._enqueue_chunk(chunk, captured_at)
 
     # -- Queue bridging --
 
-    def _enqueue_chunk(self, chunk: bytes) -> None:
-        self._update_level(chunk)
-        if not self._gate_open:
+    def _enqueue_chunk(self, chunk: bytes, captured_at: float | None = None) -> None:
+        loop = self._loop
+        if loop is None or loop.is_closed():
             return
-        if self._queue.full():
-            with contextlib.suppress(asyncio.QueueEmpty):
-                self._queue.get_nowait()  # drop oldest chunk
-        self._queue.put_nowait(chunk)
+        if captured_at is None:
+            captured_at = time.monotonic()
+        with self._queue_lock:
+            if not self._running:
+                return
+            self._level_chunk = chunk
+            self._expire_chunks(captured_at)
+            if self._gate_open:
+                if len(self._queue) >= self._queue_capacity:
+                    self._queue.popleft()
+                    self._dropped_chunks += 1
+                self._queue.append((captured_at, chunk))
+            if self._wake_pending:
+                return
+            self._wake_pending = True
+            generation = self._generation
+        try:
+            loop.call_soon_threadsafe(self._notify_chunks, generation)
+        except RuntimeError:  # pragma: no cover - event loop closed during shutdown
+            with self._queue_lock:
+                if generation == self._generation:
+                    self._wake_pending = False
 
-    def _enqueue_sentinel(self) -> None:
+    def _notify_chunks(self, generation: int) -> None:
+        """Run RMS work on the event loop, never on the capture callback."""
+        with self._queue_lock:
+            if generation != self._generation:
+                return
+            self._wake_pending = False
+            chunk, self._level_chunk = self._level_chunk, b""
+            queued = bool(self._queue)
+        self._update_level(chunk)
+        if queued:
+            self._ready.set()
+
+    def _expire_chunks(self, now: float) -> None:
+        """Drop stale capture under the queue lock; at most 20 iterations."""
+        while self._queue:
+            oldest = self._queue[0]
+            if oldest is None or (now - oldest[0]) * 1000 <= MAX_QUEUE_MS:
+                break
+            self._queue.popleft()
+            self._dropped_chunks += 1
+
+    def _enqueue_sentinel(self, generation: int, ready: asyncio.Event) -> None:
         """Put a sentinel value to unblock chunk consumers."""
-        if self._queue.full():
-            with contextlib.suppress(asyncio.QueueEmpty):
-                self._queue.get_nowait()
-        self._queue.put_nowait(None)
+        with self._queue_lock:
+            if generation == self._generation:
+                if len(self._queue) >= self._queue_capacity:
+                    self._queue.popleft()
+                    self._dropped_chunks += 1
+                self._queue.append(None)
+        ready.set()
 
     def _drain_queue(self) -> None:
         """Drop any stale chunks left over from a previous session."""
-        while not self._queue.empty():
-            with contextlib.suppress(asyncio.QueueEmpty):
-                self._queue.get_nowait()
+        with self._queue_lock:
+            self._queue.clear()
+            self._level_chunk = b""
+        self._ready.clear()
 
     def _update_level(self, chunk: bytes) -> None:
         if not chunk:

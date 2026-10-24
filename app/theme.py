@@ -112,6 +112,7 @@ QPushButton:hover {{
     border-color: {CYAN_400};
     background: rgba(34, 211, 238, 0.16);
 }}
+QPushButton:focus {{ border-color: {CYAN_400}; }}
 QPushButton:pressed {{ background: rgba(34, 211, 238, 0.28); }}
 QPushButton:disabled {{
     color: {TEXT_MUTED};
@@ -151,6 +152,7 @@ QComboBox QAbstractItemView {{
     padding: 4px;
 }}
 QCheckBox {{ spacing: 8px; background: transparent; }}
+QCheckBox:focus {{ outline: 1px solid {CYAN_400}; }}
 QCheckBox::indicator {{
     width: 16px;
     height: 16px;

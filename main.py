@@ -15,6 +15,7 @@ import argparse
 import asyncio
 import sys
 from pathlib import Path
+from typing import Any
 
 from headless import run_headless
 from settings import (
@@ -49,46 +50,48 @@ Examples:
     parser.add_argument(
         "--mode",
         choices=["text", "voice", "both"],
-        default="both",
-        help="Interaction mode (default: both)",
+        default=None,
+        help="Interaction mode (saved setting; first-run default: both)",
     )
     parser.add_argument(
         "--voice",
         choices=AVAILABLE_VOICES,
-        default=DEFAULT_VOICE,
-        help=f"Voice for audio responses (default: {DEFAULT_VOICE})",
+        default=None,
+        help=f"Voice (saved setting; first-run default: {DEFAULT_VOICE})",
     )
     parser.add_argument(
         "--yolo",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="Skip confirmation prompts for destructive operations (write, delete, run)",
     )
     parser.add_argument(
         "--working-dir",
-        default=".",
-        help="Agent's working directory for resolving relative paths (default: .)",
+        default=None,
+        help="Working directory (saved setting; first-run default: current directory)",
     )
     parser.add_argument(
         "--model",
-        default=DEFAULT_MODEL,
-        help=f"Gemini model identifier (default: {DEFAULT_MODEL})",
+        default=None,
+        help=f"Model (saved setting; first-run default: {DEFAULT_MODEL})",
     )
     parser.add_argument(
         "--share-screen",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="Stream your screen to the model so it can see what you see",
     )
     parser.add_argument(
         "--screen-fps",
         type=float,
-        default=1.0,
-        help="Screen capture frame rate (default: 1.0)",
+        default=None,
+        help="Screen frame rate (saved setting; first-run default: 1.0)",
     )
     parser.add_argument(
         "--monitor",
         type=int,
-        default=1,
-        help="Monitor to share: 0 for all, 1+ for a single screen (default: 1)",
+        default=None,
+        help="Monitor: 0 for all, 1+ for one screen (saved; first-run default: 1)",
     )
     parser.add_argument(
         "--headless",
@@ -192,20 +195,24 @@ def main() -> int:
     if args.headless and not has_tier1 and not has_free:
         _prompt_for_api_key()
 
-    working_dir = _resolve_working_dir(args.working_dir)
-
+    default_workspace = _resolve_working_dir(".")
+    fallbacks: dict[str, Any] = {
+        "mode": "both", "voice": DEFAULT_VOICE, "model": DEFAULT_MODEL,
+        "yolo": False, "share_screen": False, "screen_fps": 1.0, "screen_monitor": 1,
+        "working_dir": default_workspace, "workspace_root": default_workspace,
+    }
+    overrides = {
+        name: getattr(args, name)
+        for name in ("mode", "voice", "model", "yolo", "share_screen", "screen_fps")
+        if getattr(args, name) is not None
+    }
+    if args.monitor is not None:
+        overrides["screen_monitor"] = args.monitor
+    if args.working_dir is not None:
+        working_dir = _resolve_working_dir(args.working_dir)
+        overrides.update(working_dir=working_dir, workspace_root=working_dir)
     settings = AppSettings.load(
-        mode=args.mode,
-        voice=args.voice,
-        yolo=args.yolo,
-        working_dir=working_dir,
-        workspace_root=working_dir,
-        model=args.model,
-        share_screen=args.share_screen,
-        screen_fps=args.screen_fps,
-        screen_monitor=args.monitor,
-        headless=args.headless,
-        debug=args.debug,
+        _fallbacks=fallbacks, headless=args.headless, debug=args.debug, **overrides
     )
     settings = _guard_frozen_workspace(settings)
     settings = _with_tier_keys(settings)

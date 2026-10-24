@@ -1,20 +1,9 @@
-"""Score how well the model reads a screen frame, across capture and config options.
+"""Run a diagnostic on a human-annotated screen frame and config options.
 
-The point of this script is to stop guessing about screen-reading accuracy.
-"The model mistook Edge for Firefox" is a testable claim: capture a frame,
-write down what is actually on it, and see which configurations get it right
-and what they cost in latency.
-
-It settled three questions the first time it was run, against a real
-1920x1080 desktop:
-
-- ``media_resolution="low"`` dropped a taskbar browser that the model named
-  correctly at ``"high"`` on the identical frame. Keep it high for computer use.
-- Native 1920px/q85 frames scored the same as the 1024px/q70 frames the capture
-  pipeline already sends, at 3.5x the bytes. Raising capture fidelity buys
-  nothing.
-- ``thinking_level="high"`` scored the same as ``"medium"`` and answered
-  slower. Not worth it for reading a screen.
+Historical results came from one 1920x1080 desktop frame, with permissive
+substring scoring. They do not establish general accuracy, optimal models,
+thinking levels, or capture fidelity. The strict scorer below measures both
+answer correctness and JSON format compliance on this frame only.
 
 Usage::
 
@@ -38,22 +27,31 @@ from pathlib import Path
 import google.genai as genai
 from google.genai import types
 
-# (question, [[accepted substrings], ...], short label). Every group must match.
-QUESTIONS: list[tuple[str, list[list[str]], str]] = [
+if __package__:
+    from .eval_scoring import ScoreSpec, scores  # type: ignore[import-not-found]
+else:
+    from eval_scoring import ScoreSpec, scores
+
+# (question, strict objective specification, short label).
+QUESTIONS: list[tuple[str, ScoreSpec, str]] = [
     (
-        "Name every web browser pinned to the Windows taskbar at the bottom.",
-        [["edge"], ["chrome"], ["firefox"]],
+        "Name every web browser pinned to the Windows taskbar at the bottom. "
+        'Return only JSON {"browsers":[...]} using lowercase browser names.',
+        ScoreSpec("browsers", ("edge", "chrome", "firefox")),
         "taskbar-browsers",
     ),
     (
-        "What time is shown in the clock at the bottom right of the taskbar?",
-        [["00:01", "12:01"]],
+        "What time is shown in the clock at the bottom right of the taskbar? "
+        'Return only JSON {"hour":integer,"minute":integer}, using 24-hour time.',
+        ScoreSpec("clock", (0, 1)),
         "clock",
     ),
     (
         "What weather is shown in the bottom-left corner of the taskbar? "
-        "Give the temperature and the condition.",
-        [["25"], ["cloud"]],
+        'Return only JSON {"temperature":number,"unit":"C" or "F",'
+        '"condition":enum}. Use one condition: clear, partly_cloudy, cloudy, '
+        "rain, snow, fog, thunderstorm, or unknown.",
+        ScoreSpec("weather", (25, "C", "cloudy")),
         "weather",
     ),
 ]
@@ -145,11 +143,6 @@ async def ask(
     return "".join(chunks), first_token or (time.perf_counter() - started)
 
 
-def scores(answer: str, required: list[list[str]]) -> bool:
-    lowered = answer.lower()
-    return all(any(alt in lowered for alt in group) for group in required)
-
-
 async def run_config(
     frame: bytes,
     label: str,
@@ -171,7 +164,8 @@ async def run_config(
         flattened = " ".join(answer.split())[:100]
         print(f"   {'PASS' if ok else 'FAIL'} {short:17s} {latency:5.1f}s  {flattened}")
     mean = sum(latencies) / len(latencies)
-    print(f"  == {hits}/{len(QUESTIONS)} correct, mean first-token {mean:.1f}s\n")
+    print(f"  == {hits}/{len(QUESTIONS)} objective answers correct and schema-compliant, "
+          f"mean first-token {mean:.1f}s\n")
 
 
 async def main() -> None:
@@ -183,8 +177,10 @@ async def main() -> None:
     parser.add_argument("--model", default="gemini-3.1-flash-live-preview")
     args = parser.parse_args()
 
-    if args.capture or not args.frame.is_file():
+    if args.capture:
         capture_frame(args.frame, args.max_width, args.quality)
+    elif not args.frame.is_file():
+        parser.error(f"frame does not exist: {args.frame}; use --capture to capture explicitly")
     frame = args.frame.read_bytes()
 
     high = types.MediaResolution.MEDIA_RESOLUTION_HIGH

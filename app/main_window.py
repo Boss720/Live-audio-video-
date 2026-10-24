@@ -7,12 +7,13 @@ Qt objects and ``AgentEvent`` / ``AgentCommand`` dataclasses.
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtGui import QAction, QKeySequence, QShortcut, QTextCursor
@@ -62,9 +63,11 @@ from core.events import (
     ConnectionState,
     ConnectionStateChanged,
     ContextReset,
+    DiagnosticsUpdate,
     PartialTranscript,
     SessionError,
     SessionExpiring,
+    TextNotSent,
     ToolApprovalRequested,
     ToolCallCancelled,
     ToolCallReceived,
@@ -125,6 +128,7 @@ class _ToolCard(QFrame):
     def __init__(self, event: ToolApprovalRequested, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.call_id = event.call_id
+        self.pending = True
         self.setObjectName("glassCard")
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setAccessibleName(f"Tool approval request: {event.name}")
@@ -132,14 +136,41 @@ class _ToolCard(QFrame):
 
         layout = QVBoxLayout(self)
         layout.setSpacing(4)
+        layout.setContentsMargins(10, 8, 10, 8)
 
-        layout.addWidget(QLabel(f"Tool: <b>{event.name}</b>"))
-        layout.addWidget(QLabel(f"Args: {event.args}"))
+        summaries = {
+            "write_file": "Write a file", "read_file": "Read a file",
+            "run_command": "Run a command", "list_directory": "List a directory",
+            "computer_use": "Control the computer",
+        }
+        summary = summaries.get(event.name, event.name.replace("_", " ").capitalize())
+        self._summary = QLabel(summary)
+        self._status = QLabel("Pending approval...")
+        summary_layout = QHBoxLayout()
+        summary_layout.addWidget(self._summary, 1)
+        summary_layout.addWidget(self._status)
+        layout.addLayout(summary_layout)
+        target = event.args.get("path") or event.args.get("command")
+        if target:
+            target_label = QLabel(str(target))
+            target_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            layout.addWidget(target_label)
+        self._details = QPlainTextEdit()
+        self._details.setReadOnly(True)
+        self._details.setPlainText(json.dumps(event.args, ensure_ascii=False, indent=2))
+        self._details.setAccessibleName(f"Arguments for {event.name}")
+        self._details.setMaximumHeight(96)
+        self._details.setVisible(False)
+        details_btn = QPushButton("Show &details")
+        details_btn.setCheckable(True)
+        details_btn.setAccessibleName(f"Inspect arguments for {event.name}")
+        details_btn.toggled.connect(self._details.setVisible)
         if event.allow_text:
             layout.addWidget(QLabel(f"Policy: {event.allow_text}"))
 
-        self._status = QLabel("Pending approval...")
-        layout.addWidget(self._status)
+        for label in self.findChildren(QLabel):
+            label.setTextFormat(Qt.TextFormat.PlainText)
+            label.setWordWrap(True)
 
         btn_layout = QHBoxLayout()
         # Mnemonics make the full approve/deny cycle keyboard-only.
@@ -153,14 +184,24 @@ class _ToolCard(QFrame):
         btn_layout.addWidget(self._deny_btn)
         btn_layout.addWidget(self._cancel_btn)
         btn_layout.addStretch()
+        btn_layout.addWidget(details_btn)
         layout.addLayout(btn_layout)
+        layout.addWidget(self._details)
 
     def set_result(self, message: str) -> None:
         """Disable controls and show the resolved outcome."""
+        self.pending = False
         self._status.setText(message)
         self._approve_btn.setEnabled(False)
         self._deny_btn.setEnabled(False)
         self._cancel_btn.setEnabled(False)
+
+    def set_approved(self) -> None:
+        """Stop asking for a decision while keeping an in-flight tool cancellable."""
+        self.pending = False
+        self._status.setText("Approved · waiting for result")
+        self._approve_btn.setEnabled(False)
+        self._deny_btn.setEnabled(False)
 
 
 class MainWindow(QMainWindow):
@@ -178,12 +219,14 @@ class MainWindow(QMainWindow):
         self._force_quit = False
         self._tray: QSystemTrayIcon | None = None
         self._tray_message_shown = False
+        self._settings_dirty = False
 
         self.setWindowTitle("Gemini Live Agent")
         self.setMinimumSize(720, 520)
         self._build_ui()
         self._populate_devices()
         self._load_settings_to_ui()
+        self._watch_settings_changes()
         self._setup_tray()
 
     # -- UI construction --
@@ -193,7 +236,7 @@ class MainWindow(QMainWindow):
         central.setObjectName("centralRoot")
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
-        main_layout.setSpacing(8)
+        main_layout.setSpacing(6)
 
         # Status bar + mic state chip + connect button
         top_layout = QHBoxLayout()
@@ -225,14 +268,26 @@ class MainWindow(QMainWindow):
         self._settings_toggle_btn.setChecked(True)
         self._settings_toggle_btn.setAccessibleName("Show or hide settings")
         self._settings_toggle_btn.toggled.connect(self._toggle_settings_panel)
-        main_layout.addWidget(self._settings_toggle_btn)
+        settings_header = QHBoxLayout()
+        settings_header.addWidget(self._settings_toggle_btn)
+        self._settings_state_label = QLabel("Saved settings · applies on next connect")
+        self._settings_state_label.setAccessibleName("Settings save and apply status")
+        self._settings_state_label.setWordWrap(True)
+        settings_header.addWidget(self._settings_state_label, 1)
+        main_layout.addLayout(settings_header)
 
         self._settings_widget = QWidget()
         self._settings_widget.setObjectName("glassPanel")
         apply_glass_shadow(self._settings_widget)
         settings_layout = QGridLayout(self._settings_widget)
         settings_layout.setSpacing(6)
-        main_layout.addWidget(self._settings_widget)
+        self._settings_scroll = QScrollArea()
+        self._settings_scroll.setAccessibleName("Session settings")
+        self._settings_scroll.setWidgetResizable(True)
+        self._settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._settings_scroll.setWidget(self._settings_widget)
+        self._settings_scroll.setMaximumHeight(160)
+        main_layout.addWidget(self._settings_scroll)
 
         row = 0
         self._model_combo = QComboBox()
@@ -276,6 +331,24 @@ class MainWindow(QMainWindow):
         fps_layout.addWidget(self._fps_spin)
         fps_layout.addStretch()
         settings_layout.addLayout(fps_layout, row, 0, 1, 2)
+
+        row += 1
+        self._screen_deduplicate_check = QCheckBox("Skip identical screen frames (experimental)")
+        self._screen_deduplicate_check.setToolTip(
+            "Opt in to skipping exact repeated frames. Image size and quality stay unchanged."
+        )
+        settings_layout.addWidget(self._screen_deduplicate_check, row, 0, 1, 2)
+
+        row += 1
+        self._audio_chunk_combo = QComboBox()
+        self._audio_chunk_combo.setAccessibleName("Audio chunk duration")
+        for duration in (20, 40, 100):
+            self._audio_chunk_combo.addItem(f"{duration} ms", duration)
+        self._audio_chunk_combo.setToolTip(
+            "Microphone packet duration; applies on next connect. Default: 100 ms."
+        )
+        settings_layout.addWidget(QLabel("Audio chunks:"), row, 0)
+        settings_layout.addWidget(self._audio_chunk_combo, row, 1)
 
         row += 1
         self._computer_use_check = QCheckBox("Computer control (mouse/keyboard)")
@@ -343,9 +416,20 @@ class MainWindow(QMainWindow):
         settings_layout.addLayout(wd_layout, row, 1)
 
         row += 1
-        save_settings_btn = QPushButton("Save settings")
-        save_settings_btn.clicked.connect(self._on_save_settings)
-        settings_layout.addWidget(save_settings_btn, row, 1)
+        self._save_settings_btn = QPushButton("Save settings")
+        self._save_settings_btn.clicked.connect(self._on_save_settings)
+        settings_layout.addWidget(self._save_settings_btn, row, 1)
+        for field_label in self._settings_widget.findChildren(QLabel):
+            index = settings_layout.indexOf(field_label)
+            field = None
+            if index >= 0:
+                field_row, _, _, _ = cast(
+                    tuple[int, int, int, int], settings_layout.getItemPosition(index)
+                )
+                field = settings_layout.itemAtPosition(field_row, 1)
+            field_widget = field.widget() if field is not None else None
+            if field_widget is not None:
+                field_label.setBuddy(field_widget)
 
         # Screen-share indicator banner (visible only while sharing + connected)
         self._share_banner = QLabel("● Sharing screen — the model can see your screen")
@@ -361,6 +445,7 @@ class MainWindow(QMainWindow):
         self._transcript.setReadOnly(True)
         self._transcript.setPlaceholderText("Transcript will appear here...")
         self._transcript.setAccessibleName("Conversation transcript")
+        self._transcript.setMinimumHeight(70)
         transcript_page = QWidget()
         transcript_layout = QVBoxLayout(transcript_page)
         transcript_layout.setContentsMargins(0, 0, 0, 0)
@@ -383,6 +468,10 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self._tabs, stretch=1)
 
         # Tool approvals
+        self._approval_count_label = QLabel("0 pending approvals")
+        self._approval_count_label.setAccessibleName("Pending tool approvals")
+        self._approval_count_label.setVisible(False)
+        main_layout.addWidget(self._approval_count_label)
         self._tool_scroll = QScrollArea()
         self._tool_scroll.setWidgetResizable(True)
         self._tool_container = QWidget()
@@ -391,6 +480,7 @@ class MainWindow(QMainWindow):
         self._tool_layout.addStretch()
         self._tool_scroll.setWidget(self._tool_container)
         self._tool_scroll.setMaximumHeight(180)
+        self._tool_scroll.setMinimumHeight(160)
         self._tool_scroll.setVisible(False)
         main_layout.addWidget(self._tool_scroll)
 
@@ -429,12 +519,17 @@ class MainWindow(QMainWindow):
         self._usage_label = QLabel("0 tokens")
         self._usage_label.setAccessibleName("Token usage")
         self.statusBar().addPermanentWidget(self._usage_label)
+        self._diagnostics_label = QLabel("Local diagnostics: no samples")
+        self._diagnostics_label.setAccessibleName("Local runtime diagnostics")
+        self._diagnostics_label.setToolTip(
+            "Local application spans only; not provider model or hardware latency."
+        )
+        self.statusBar().addWidget(self._diagnostics_label, 1)
 
         # Meter timer
         self._meter_timer = QTimer(self)
         self._meter_timer.setInterval(_METER_INTERVAL_MS)
         self._meter_timer.timeout.connect(self._update_meters)
-        self._meter_timer.start()
 
         # Menu bar shortcut for exit
         exit_action = QAction("E&xit", self)
@@ -476,6 +571,10 @@ class MainWindow(QMainWindow):
         self._mode_combo.setCurrentText(self._settings.mode.title())
         self._share_screen_check.setChecked(self._settings.share_screen)
         self._fps_spin.setValue(self._settings.screen_fps)
+        self._screen_deduplicate_check.setChecked(self._settings.screen_deduplicate)
+        self._audio_chunk_combo.setCurrentIndex(
+            self._audio_chunk_combo.findData(self._settings.audio_chunk_duration_ms)
+        )
         self._computer_use_check.setChecked(self._settings.computer_use_enabled)
         self._yolo_check.setChecked(self._settings.yolo)
         self._tray_check.setChecked(self._settings.minimize_to_tray)
@@ -489,6 +588,30 @@ class MainWindow(QMainWindow):
             self._output_device_combo.setCurrentText(self._settings.output_device)
 
     # -- Settings handling --
+
+    def _watch_settings_changes(self) -> None:
+        for combo in self._settings_widget.findChildren(QComboBox):
+            combo.currentTextChanged.connect(self._mark_settings_dirty)
+        for check in self._settings_widget.findChildren(QCheckBox):
+            check.toggled.connect(self._mark_settings_dirty)
+        for edit in self._settings_widget.findChildren(QLineEdit):
+            edit.textChanged.connect(self._mark_settings_dirty)
+        self._fps_spin.valueChanged.connect(self._mark_settings_dirty)
+        self._system_prompt_edit.textChanged.connect(self._mark_settings_dirty)
+        self._mode_combo.currentTextChanged.connect(self._refresh_mic_state)
+        self._refresh_settings_state()
+
+    def _mark_settings_dirty(self, *_args: Any) -> None:
+        self._settings_dirty = True
+        self._refresh_settings_state()
+
+    def _refresh_settings_state(self) -> None:
+        state = "Unsaved changes" if self._settings_dirty else "Saved settings"
+        self._settings_state_label.setText(f"{state} · applies on next connect")
+        self._settings_state_label.setToolTip(
+            "Save settings to keep them for later. Connect also saves and applies settings. "
+            "An active session keeps the settings it connected with."
+        )
 
     def _build_settings(self) -> AppSettings:
         """Construct a validated AppSettings from the current UI values.
@@ -517,6 +640,8 @@ class MainWindow(QMainWindow):
             "workspace_root": working_dir,
             "share_screen": self._share_screen_check.isChecked(),
             "screen_fps": self._fps_spin.value(),
+            "screen_deduplicate": self._screen_deduplicate_check.isChecked(),
+            "audio_chunk_duration_ms": self._audio_chunk_combo.currentData(),
             "computer_use_enabled": self._computer_use_check.isChecked(),
             "input_device": self._input_device_combo.currentData(),
             "output_device": self._output_device_combo.currentData(),
@@ -538,6 +663,8 @@ class MainWindow(QMainWindow):
     def _on_save_settings(self) -> None:
         try:
             self._build_settings().save()
+            self._settings_dirty = False
+            self._refresh_settings_state()
         except Exception as exc:
             QMessageBox.warning(self, "Settings error", str(exc))
 
@@ -554,6 +681,7 @@ class MainWindow(QMainWindow):
     @Slot(bool)
     def _toggle_settings_panel(self, expanded: bool) -> None:
         self._settings_widget.setVisible(expanded)
+        self._settings_scroll.setVisible(expanded)
         self._settings_toggle_btn.setText(
             "Hide settings" if expanded else "Show settings"
         )
@@ -654,6 +782,39 @@ class MainWindow(QMainWindow):
             self._set_mic_state(_MicState.MUTED)
         else:
             self._set_mic_state(_MicState.LIVE)
+        self._refresh_meter_timer()
+
+    def _refresh_meter_timer(self) -> None:
+        active = (
+            self.isVisible() and not self.isMinimized() and self._bridge is not None
+            and self._mode_combo.currentText().lower() != "text"
+            and self._status_label.text() in (
+                ConnectionState.LIVE.value, ConnectionState.DRAINING.value
+            )
+        )
+        if active:
+            self._meter_timer.start()
+        else:
+            self._meter_timer.stop()
+            self._mic_meter.setValue(0)
+            self._speaker_meter.setValue(0)
+
+    def showEvent(self, event: Any) -> None:
+        super().showEvent(event)
+        self._refresh_meter_timer()
+
+    def hideEvent(self, event: Any) -> None:
+        self._meter_timer.stop()
+        super().hideEvent(event)
+
+    def changeEvent(self, event: Any) -> None:
+        super().changeEvent(event)
+        if hasattr(self, "_meter_timer"):
+            self._refresh_meter_timer()
+
+    def resizeEvent(self, event: Any) -> None:
+        super().resizeEvent(event)
+        self._settings_scroll.setMaximumHeight(min(240, max(64, self.height() - 400)))
 
     def _update_share_banner(self) -> None:
         self._share_banner.setVisible(self._sharing_active)
@@ -669,6 +830,8 @@ class MainWindow(QMainWindow):
         try:
             settings = self._build_settings()
             settings.save()
+            self._settings_dirty = False
+            self._refresh_settings_state()
         except Exception as exc:
             QMessageBox.warning(self, "Settings error", str(exc))
             return
@@ -677,6 +840,7 @@ class MainWindow(QMainWindow):
         self._bridge.event_emitted.connect(self._on_event)
         self._bridge.finished_with_reason.connect(self._on_bridge_finished)
         self._bridge.start()
+        self._diagnostics_label.setText("Local diagnostics: no samples")
 
         self._connect_btn.setText("Disconnect")
         self._settings_widget.setEnabled(False)
@@ -713,6 +877,7 @@ class MainWindow(QMainWindow):
         self._update_share_banner()
         self._refresh_mic_state()
         self._add_activity(f"Disconnected ({reason})")
+        self._resolve_pending_approvals("Session disconnected", session_finished=True)
 
     # -- Event handling --
 
@@ -733,8 +898,14 @@ class MainWindow(QMainWindow):
                 self._connect_btn.setText("Disconnect")
                 self._settings_widget.setEnabled(False)
             self._refresh_mic_state()
+            if event.state == ConnectionState.DISCONNECTED:
+                self._resolve_pending_approvals("Session disconnected")
         elif isinstance(event, PartialTranscript):
             self._append_partial(event.text, event.source)
+        elif isinstance(event, TextNotSent):
+            self._append_system(f"[NOT SENT] {event.text}\nReason: {event.reason}")
+            if not self._input_edit.text():
+                self._input_edit.setText(event.text)
         elif isinstance(event, TurnComplete):
             self._append_system(f"[TURN COMPLETE] {event.source.value}")
             self._last_source = None
@@ -770,6 +941,8 @@ class MainWindow(QMainWindow):
                 self._append_system(f"[ERROR] {event.message}")
         elif isinstance(event, UsageUpdate):
             self._update_usage(event)
+        elif isinstance(event, DiagnosticsUpdate):
+            self._update_diagnostics(event)
         elif isinstance(event, AudioLevel):
             # Levels are polled via _update_meters; ignore pushed events.
             pass
@@ -796,6 +969,34 @@ class MainWindow(QMainWindow):
 
     # -- Tool cards --
 
+    def _update_diagnostics(self, event: DiagnosticsUpdate) -> None:
+        details = ["Local application measurements; not provider model or hardware latency."]
+        for name, timing in event.timings.items():
+            details.append(
+                f"{name}: latest {timing.latest_ms:.1f} ms; p50 {timing.p50_ms:.1f}, "
+                f"p95 {timing.p95_ms:.1f}, p99 {timing.p99_ms:.1f} ms ({timing.samples} samples)"
+            )
+        details.extend(f"{name}: {value:g}" for name, value in event.audio.items())
+        details.extend(f"{name}: {value}" for name, value in event.counters.items())
+        measurements = len(event.timings) + len(event.audio) + len(event.counters)
+        self._diagnostics_label.setText(
+            f"Local diagnostics: {measurements} measurements · hover for details"
+        )
+        self._diagnostics_label.setToolTip("\n".join(details))
+
+    def _refresh_pending_count(self) -> None:
+        count = sum(card.pending for card in self._tool_cards.values())
+        self._approval_count_label.setText(f"{count} pending approvals")
+        self._approval_count_label.setVisible(bool(self._tool_cards))
+
+    def _resolve_pending_approvals(self, message: str, *, session_finished: bool = False) -> None:
+        for card in self._tool_cards.values():
+            # Approved tool tasks survive socket reconnects. Only the supervisor's
+            # final exit makes an in-flight tool impossible to cancel.
+            if card.pending or (session_finished and card._cancel_btn.isEnabled()):
+                card.set_result(message)
+        self._refresh_pending_count()
+
     def _add_tool_card(self, event: ToolApprovalRequested) -> None:
         self._tool_scroll.setVisible(True)
         card = _ToolCard(event)
@@ -810,21 +1011,30 @@ class MainWindow(QMainWindow):
         )
         self._tool_cards[event.call_id] = card
         self._tool_layout.insertWidget(0, card)
+        self._refresh_pending_count()
+        if self.height() < 680:
+            self._settings_toggle_btn.setChecked(False)
 
     @Slot()
     def _approve_tool(self, call_id: str) -> None:
         if self._bridge is not None:
             self._bridge.send_command(ApproveTool(call_id=call_id))
+            self._tool_cards[call_id].set_approved()
+            self._refresh_pending_count()
 
     @Slot()
     def _deny_tool(self, call_id: str) -> None:
         if self._bridge is not None:
             self._bridge.send_command(DenyTool(call_id=call_id))
+            self._tool_cards[call_id].set_result("Denied · waiting for result")
+            self._refresh_pending_count()
 
     @Slot()
     def _cancel_tool(self, call_id: str) -> None:
         if self._bridge is not None:
             self._bridge.send_command(CancelTool(call_ids=[call_id]))
+            self._tool_cards[call_id].set_result("Cancellation requested")
+            self._refresh_pending_count()
 
     def _update_tool_card(self, event: ToolResultSent) -> None:
         card = self._tool_cards.get(event.call_id)
@@ -835,6 +1045,7 @@ class MainWindow(QMainWindow):
         if event.orphaned:
             message += " (orphaned)"
         card.set_result(message)
+        self._refresh_pending_count()
         self._append_system(f"[TOOL] {event.name} -> {message}")
 
     def _update_tool_card_cancelled(self, event: ToolCallCancelled) -> None:
@@ -843,6 +1054,7 @@ class MainWindow(QMainWindow):
             if card is None:
                 continue
             card.set_result(f"Cancelled: {event.reason}")
+        self._refresh_pending_count()
 
     # -- Input and meters --
 
@@ -874,6 +1086,7 @@ class MainWindow(QMainWindow):
     # -- Window close --
 
     def closeEvent(self, event: Any) -> None:
+        self._meter_timer.stop()
         # Minimize to the tray instead of quitting when the setting is on.
         if (
             not self._force_quit

@@ -8,6 +8,7 @@ publishes to the GUI.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Any
 
 from google.genai import types
@@ -52,6 +53,15 @@ class TurnState:
         # Events produced by timer callbacks are buffered here because
         # ``consume_server_content`` is synchronous. Public methods drain it.
         self._outbox: list[AgentEvent] = []
+        self._timer_callback: Callable[[list[AgentEvent]], None] | None = None
+
+    def set_timer_callback(self, callback: Callable[[list[AgentEvent]], None] | None) -> None:
+        """Deliver timer-produced events to an active consumer, if supplied.
+
+        Without a callback, synchronous consumers continue to drain events on
+        their next ``consume_server_content`` or ``flush`` call.
+        """
+        self._timer_callback = callback
 
     def consume_server_content(self, sc: types.LiveServerContent) -> list[AgentEvent]:
         """Process a server content chunk and return any events to emit."""
@@ -75,6 +85,10 @@ class TurnState:
                 if text:
                     self._pending_model += text
                     self._schedule_emit(TranscriptSource.MODEL)
+
+        # Immediate emissions must precede an interruption or final event in
+        # the same packet, just as delayed timer emissions do.
+        events.extend(self._drain_outbox())
 
         # Interrupted: model was cut off. Surface as a non-fatal session error
         # and reset the model transcript so the next turn starts fresh.
@@ -142,8 +156,13 @@ class TurnState:
             self._emit_now(source)
             return
 
-        handle = loop.call_later(self._coalesce_s, self._emit_now, source)
+        handle = loop.call_later(self._coalesce_s, self._emit_from_timer, source)
         self._set_timer(source, handle)
+
+    def _emit_from_timer(self, source: TranscriptSource) -> None:
+        self._emit_now(source)
+        if self._timer_callback is not None:
+            self._timer_callback(self._drain_outbox())
 
     def _emit_now(self, source: TranscriptSource) -> None:
         """Emit accumulated text for ``source`` if it has changed."""
