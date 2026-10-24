@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -17,7 +16,7 @@ def store(tmp_path: Path) -> Store:
 
 def test_record_usage_batch_inserts_all_modalities_in_one_transaction(store: Store) -> None:
     statements: list[str] = []
-    store._conn.set_trace_callback(statements.append)
+    store._write_conn.set_trace_callback(statements.append)
     rows = [(name, count, cost) for name, count, cost in (
         ("audio_in", 11, 0.1),
         ("audio_out", 12, 0.2),
@@ -27,6 +26,7 @@ def test_record_usage_batch_inserts_all_modalities_in_one_transaction(store: Sto
     )]
 
     store.record_usage_batch("run", rows, "stamp")
+    store.flush()
 
     records = store._conn.execute(
         "SELECT modality, tokens, usd, recorded_at FROM usage ORDER BY rowid"
@@ -42,7 +42,7 @@ def test_record_usage_batch_inserts_all_modalities_in_one_transaction(store: Sto
 
 def test_record_usage_batch_empty_does_not_open_transaction(store: Store) -> None:
     statements: list[str] = []
-    store._conn.set_trace_callback(statements.append)
+    store._write_conn.set_trace_callback(statements.append)
 
     store.record_usage_batch("run", [], "stamp")
 
@@ -55,8 +55,9 @@ def test_record_usage_batch_rolls_back_all_rows_if_any_row_is_invalid(store: Sto
     rows = [("audio_in", 11, 0.1), ("audio_out", 12, 0.2), ("broken", 13, 0.3)]
     invalid_rows = [rows[0], (None, 12, 0.2), rows[2]]  # type: ignore[list-item]
 
-    with pytest.raises(sqlite3.IntegrityError):
-        store.record_usage_batch("run", invalid_rows, "stamp")
+    # Writes are async: the failure is logged on the writer thread, not raised.
+    store.record_usage_batch("run", invalid_rows, "stamp")
+    store.flush()
 
     assert store._conn.execute("SELECT COUNT(*) FROM usage").fetchone()[0] == 0
 

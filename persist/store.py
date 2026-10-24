@@ -7,7 +7,10 @@ Uses only the stdlib ``sqlite3`` module; no ORM. JSON values are serialized with
 from __future__ import annotations
 
 import json
+import logging
+import queue
 import sqlite3
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
@@ -19,6 +22,14 @@ try:
     import orjson
 except ImportError:  # pragma: no cover - orjson is a required dependency
     orjson = None  # type: ignore[assignment]
+
+logger = logging.getLogger(__name__)
+
+_PRAGMAS = (
+    "PRAGMA journal_mode=WAL",
+    "PRAGMA synchronous=NORMAL",
+    "PRAGMA busy_timeout=5000",
+)
 
 
 class _JsonSerializer:
@@ -59,9 +70,55 @@ class Store:
         )
         # Ensure the parent directory exists atomically before opening the DB.
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.db_path)
-        self._conn.row_factory = sqlite3.Row
+        self._conn = self._connect()
         self._create_tables()
+        # Single writer thread owns its own connection so commits (fsync) never
+        # run on the caller's (asyncio event-loop) thread.
+        self._write_conn = self._connect()
+        self._queue: queue.Queue[tuple[str, Any, bool] | None] = queue.Queue()
+        self._closed = False
+        self._writer = threading.Thread(
+            target=self._writer_loop, name="store-writer", daemon=True
+        )
+        self._writer.start()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        for pragma in _PRAGMAS:
+            conn.execute(pragma).fetchall()
+        return conn
+
+    def _writer_loop(self) -> None:
+        conn = self._write_conn
+        while True:
+            item = self._queue.get()
+            try:
+                if item is None:
+                    return
+                sql, params, many = item
+                try:
+                    with conn:
+                        if many:
+                            conn.executemany(sql, params)
+                        else:
+                            conn.execute(sql, params)
+                except Exception:
+                    logger.exception("store write failed")
+            finally:
+                self._queue.task_done()
+
+    def _enqueue(self, sql: str, params: Any, many: bool = False) -> None:
+        """Queue a write for the background writer (fire-and-forget)."""
+        if self._closed:
+            logger.warning("store write after close dropped")
+            return
+        self._queue.put((sql, params, many))
+
+    def flush(self) -> None:
+        """Block until every queued write has been committed."""
+        if not self._closed:
+            self._queue.join()
 
     def _create_tables(self) -> None:
         schema = """
@@ -115,7 +172,19 @@ class Store:
             );
         """
         self._conn.executescript(schema)
+        self._conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_turns_run_completed ON turns(run_id, completed_at);
+            CREATE INDEX IF NOT EXISTS idx_usage_run_recorded ON usage(run_id, recorded_at);
+            CREATE INDEX IF NOT EXISTS idx_resumption_run_created
+                ON resumption_handles(run_id, created_at);
+            """
+        )
         self._ensure_column("tool_calls", "completed_at", "TEXT")
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tool_calls_run_completed "
+            "ON tool_calls(run_id, completed_at)"
+        )
         self._conn.commit()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
@@ -125,7 +194,14 @@ class Store:
             self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def close(self) -> None:
-        """Close the underlying database connection."""
+        """Drain queued writes, stop the writer thread, and close connections."""
+        if self._closed:
+            return
+        self._queue.join()
+        self._closed = True
+        self._queue.put(None)
+        self._writer.join(timeout=10)
+        self._write_conn.close()
         self._conn.close()
 
     def __enter__(self) -> Store:
@@ -147,23 +223,21 @@ class Store:
         workspace_root: str,
     ) -> None:
         """Insert a new run record (idempotent for a repeated run_id)."""
-        with self._conn:
-            self._conn.execute(
-                """
-                INSERT OR IGNORE INTO runs (id, started_at, model, mode, workspace_root)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (run_id, started_at, model, mode, workspace_root),
-            )
+        self._enqueue(
+            """
+            INSERT OR IGNORE INTO runs (id, started_at, model, mode, workspace_root)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (run_id, started_at, model, mode, workspace_root),
+        )
 
     def end_run(self, run_id: str, ended_at: str | None = None) -> None:
         """Mark a run as ended."""
         when = ended_at if ended_at is not None else self._utc_now_iso()
-        with self._conn:
-            self._conn.execute(
-                "UPDATE runs SET ended_at = ? WHERE id = ?",
-                (when, run_id),
-            )
+        self._enqueue(
+            "UPDATE runs SET ended_at = ? WHERE id = ?",
+            (when, run_id),
+        )
 
     def append_turn(
         self,
@@ -175,14 +249,13 @@ class Store:
         epoch: int,
     ) -> None:
         """Append a completed turn to the transcript."""
-        with self._conn:
-            self._conn.execute(
-                """
-                INSERT INTO turns (id, run_id, role, text, completed_at, epoch)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (turn_id, run_id, role, text, completed_at, epoch),
-            )
+        self._enqueue(
+            """
+            INSERT INTO turns (id, run_id, role, text, completed_at, epoch)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (turn_id, run_id, role, text, completed_at, epoch),
+        )
 
     def record_tool_call(
         self,
@@ -203,27 +276,25 @@ class Store:
         clean_result = redact_data(result) if result is not None else None
         completed_at = self._utc_now_iso() if clean_result is not None else None
         result_json = self._json.dumps(clean_result) if clean_result is not None else None
-        with self._conn:
-            self._conn.execute(
-                """
-                INSERT INTO tool_calls
-                (id, run_id, turn_id, name, args, result, ok, orphaned, epoch, completed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    call_id,
-                    run_id,
-                    turn_id,
-                    name,
-                    self._json.dumps(clean_args),
-                    result_json,
-                    int(ok),
-                    int(orphaned),
-                    epoch,
-                    completed_at,
-                ),
-            )
-
+        self._enqueue(
+            """
+            INSERT INTO tool_calls
+            (id, run_id, turn_id, name, args, result, ok, orphaned, epoch, completed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                call_id,
+                run_id,
+                turn_id,
+                name,
+                self._json.dumps(clean_args),
+                result_json,
+                int(ok),
+                int(orphaned),
+                epoch,
+                completed_at,
+            ),
+        )
 
     def record_usage(
         self,
@@ -245,17 +316,18 @@ class Store:
         """Record several modality usage rows atomically."""
         if not rows:
             return
-        with self._conn:
-            self._conn.executemany(
-                """
-                INSERT INTO usage (run_id, modality, tokens, usd, recorded_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                [(run_id, modality, tokens, usd, recorded_at) for modality, tokens, usd in rows],
-            )
+        self._enqueue(
+            """
+            INSERT INTO usage (run_id, modality, tokens, usd, recorded_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [(run_id, modality, tokens, usd, recorded_at) for modality, tokens, usd in rows],
+            many=True,
+        )
 
     def get_usage(self, run_id: str) -> list[tuple[str, int, float, str]]:
         """Return usage rows for a run ordered by recording time."""
+        self.flush()
         rows = self._conn.execute(
             """
             SELECT modality, tokens, usd, recorded_at
@@ -272,6 +344,7 @@ class Store:
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         """Return the run record as a dict, or ``None`` if it does not exist."""
+        self.flush()
         row = self._conn.execute(
             "SELECT * FROM runs WHERE id = ?", (run_id,)
         ).fetchone()
@@ -285,14 +358,13 @@ class Store:
         expires_at: str | None,
     ) -> None:
         """Store a resumption handle for later session recovery."""
-        with self._conn:
-            self._conn.execute(
-                """
-                INSERT INTO resumption_handles (handle, run_id, created_at, expires_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (handle, run_id, created_at, expires_at),
-            )
+        self._enqueue(
+            """
+            INSERT INTO resumption_handles (handle, run_id, created_at, expires_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (handle, run_id, created_at, expires_at),
+        )
 
     def get_latest_resumption_handle(self, run_id: str) -> tuple[str, str, str | None] | None:
         """Return the most recent resumption handle for a run.
@@ -300,6 +372,7 @@ class Store:
         Returns a tuple of ``(handle, created_at, expires_at)`` or ``None`` if
         no handle exists.
         """
+        self.flush()
         row = self._conn.execute(
             """
             SELECT handle, created_at, expires_at
@@ -317,16 +390,16 @@ class Store:
     def delete_expired_handles(self, now: datetime | None = None) -> None:
         """Delete resumption handles whose ``expires_at`` has passed."""
         when = now.isoformat() if now is not None else self._utc_now_iso()
-        with self._conn:
-            self._conn.execute(
-                "DELETE FROM resumption_handles WHERE expires_at IS NOT NULL AND expires_at <= ?",
-                (when,),
-            )
+        self._enqueue(
+            "DELETE FROM resumption_handles WHERE expires_at IS NOT NULL AND expires_at <= ?",
+            (when,),
+        )
 
     def get_active_resumption_handle(self, run_id: str, now: datetime | None = None) -> str | None:
         """Return the most recent unexpired resumption handle for a run."""
         self.delete_expired_handles(now)
         when = now.isoformat() if now is not None else self._utc_now_iso()
+        self.flush()
         row = self._conn.execute(
             """
             SELECT handle
@@ -343,14 +416,14 @@ class Store:
 
     def delete_resumption_handle(self, handle: str) -> None:
         """Delete a specific resumption handle."""
-        with self._conn:
-            self._conn.execute(
-                "DELETE FROM resumption_handles WHERE handle = ?",
-                (handle,),
-            )
+        self._enqueue(
+            "DELETE FROM resumption_handles WHERE handle = ?",
+            (handle,),
+        )
 
     def get_turns(self, run_id: str, limit: int = 100) -> list[tuple[str, str, int]]:
         """Return the latest bounded turns in chronological/insertion order."""
+        self.flush()
         rows = self._conn.execute(
             """
             SELECT role, text, epoch
@@ -371,6 +444,7 @@ class Store:
         self, run_id: str, limit: int = 100
     ) -> list[tuple[str, str, bool, str, int]]:
         """Return completed tool results for a run ordered by completion time."""
+        self.flush()
         rows = self._conn.execute(
             """
             SELECT id, name, ok, result, epoch

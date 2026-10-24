@@ -25,12 +25,13 @@ def test_usage_modalities_share_one_transaction(tmp_path: Path) -> None:
         settings, asyncio.Queue(), asyncio.Queue(), journal, store, "metrics"
     )
     statements: list[str] = []
-    store._conn.set_trace_callback(statements.append)
+    store._write_conn.set_trace_callback(statements.append)
     try:
         session._record_usage(UsageUpdate(
             prompt_tokens=10, cached_tokens=2, completion_tokens=3,
             audio_tokens=4, video_tokens=5, estimated_usd=0.01,
         ))
+        store.flush()
         assert sum(sql.startswith("BEGIN") for sql in statements) == 1
         assert sum(sql.startswith("COMMIT") for sql in statements) == 1
         assert [(row[0], row[1]) for row in store.get_usage("metrics")] == [
