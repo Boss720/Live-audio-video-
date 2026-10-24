@@ -40,8 +40,20 @@
   redaction may hit prose like `password: required`. Headless exits on stdin EOF. start_line=0 now
   fails validation. Wake word is looser for long names (Soundex within edit distance 2).
 - Live checks pending: M3, Wave 2 and Wave 3 items in PLAN.md.
-- NEXT: Wave 4 UI (mocks A, C, D in the review page): status strip, settings dialog, approvals
-  rail, chat bubbles, diagnostics page (use speech_end_to_first_audio_ms, frame dedup counters).
+- Wave 4 UI DONE, 6 commits: `cb3c5b4` status strip, `d6656ef` chat view, `cb37d7c` approvals rail,
+  `68bd53b` settings dialog, `291e0c8` diagnostics page, `8f816e6` main window wiring + table theme.
+  Gates: 624 passed, 3 skipped; mypy and ruff clean. GUI launched (`pythonw main.py --no-headless`):
+  status strip, Ctrl+, settings (risky box), Ctrl+Shift+D diagnostics checked by eye; not connected live.
+- Wave 4 behaviour changes: inline settings grid is gone (Settings button / Ctrl+,). Live-applied on save
+  while connected: yolo (SetGatingMode), share_screen + screen_monitor (SetShareScreen), minimize_to_tray.
+  Everything else says "N changes apply on reconnect". Approvals rail shows Cancel only after Approve.
+- Wave 4 gaps: DisconnectReason is not in the AgentEvent union, so the diagnostics Reconnects tile stays 0
+  until the session emits it. Strip tier label is inferred from privacy_mode/prefer_free_tier until a
+  RateLimitHit arrives. No Interrupt button (no command exists). Mock B (mini pill) not built.
+- Launch note: AppSettings.headless defaults True, so plain `main.py` runs the terminal mode; use
+  `--no-headless` for the GUI. The venv's python is 3.11 (uv trampoline), not 3.14.
+- NEXT: live session checks (M3, Wave 2, Wave 3 items in PLAN.md) using the new diagnostics page, then
+  emit DisconnectReason as an event, then Mock B / Wave 5.
 
 ## Previous handoff — 24 October 2026 (historical)
 

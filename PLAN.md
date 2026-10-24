@@ -54,7 +54,15 @@ Needs live check: echo gate on speakers vs headset detection names, frame accura
 headless EOF in voice mode, wake-word false positives in real ASR.
 
 ### Wave 4 — UI (mocks A, C, D)
-- [ ] Status strip, settings dialog, approvals rail, chat bubbles, diagnostics page
+- [x] Status strip, settings dialog, approvals rail, chat bubbles, diagnostics page
+  - [x] W4.1 `app/status_strip.py` (model, tier, latency p50, cost, YOLO, screen)
+  - [x] W4.2 `app/chat_view.py` (bubbles, inline tool rows, plain-text model output)
+  - [x] W4.3 `app/approvals_rail.py` (risk LOW/MEDIUM/HIGH, deny all, cancel)
+  - [x] W4.4 `app/settings_dialog.py` (all persisted fields, live vs reconnect, risky box)
+  - [x] W4.5 `app/diagnostics_page.py` (speech end to first audio, frame dedup, export)
+  - [x] W4.6 integrate into `app/main_window.py` (Ctrl+, opens settings), GUI tests green
+  - Result: commits `cb3c5b4` `d6656ef` `cb37d7c` `68bd53b` `291e0c8` (components) + `8f816e6` (wiring).
+    624 passed, 3 skipped; ruff and mypy clean. GUI launched; Settings, Diagnostics, risky box checked by eye.
 
 ---
 
