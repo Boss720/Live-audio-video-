@@ -416,3 +416,23 @@ def test_disconnect_reason_counts_reconnects_except_user_request(window: MainWin
     summary = window._diagnostics_page.report()["summary"]
     assert summary["reconnects"] == 1
     assert summary["last_disconnect_code"] == "go_away"
+
+
+def test_mini_mode_toggles_and_mirrors_events(window: MainWindow) -> None:
+    assert not window._pill.isVisible()
+    window._toggle_mini_mode()
+    assert window._pill.isVisible()
+    window._on_event(
+        ToolApprovalRequested(
+            call_id="c1", name="run_command", args={"command": "pytest -q"}, allow_text=""
+        )
+    )
+    assert window._pill.pending_count() == 1
+    window._on_event(
+        ToolResultSent(call_id="c1", name="run_command", ok=True, result="done", orphaned=False)
+    )
+    assert window._pill.pending_count() == 0
+    window._on_event(PartialTranscript("hello there", TranscriptSource.MODEL, 1))
+    assert "hello there" in window._pill_caption
+    window._exit_mini_mode()
+    assert not window._pill.isVisible()

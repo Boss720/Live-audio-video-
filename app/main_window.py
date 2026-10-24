@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 from app.approvals_rail import ApprovalsRail
 from app.bridge import Bridge
 from app.chat_view import ChatView
+from app.companion_pill import CompanionPill
 from app.diagnostics_page import DiagnosticsPage
 from app.settings_dialog import LIVE_FIELDS, MODEL_OPTIONS, SettingsDialog
 from app.status_strip import StatusStrip
@@ -80,6 +81,7 @@ _METER_INTERVAL_MS = 33
 _RAIL_WIDTH = 340
 _TOOL_SUMMARY_CHARS = 120
 _TOOL_ARG_CHARS = 60
+_PILL_CAPTION_CHARS = 140
 _TIER_NAMES = {"free": "Free", "tier1": "Tier 1"}
 
 logger = logging.getLogger(__name__)
@@ -125,6 +127,8 @@ class MainWindow(QMainWindow):
         self._tray_message_shown = False
         self._settings_dialog: SettingsDialog | None = None
         self._diagnostics_page = DiagnosticsPage(self)
+        self._pill = CompanionPill()
+        self._pill_caption = ""
 
         self.setWindowTitle("Gemini Live Agent")
         self.setMinimumSize(960, 600)
@@ -147,6 +151,13 @@ class MainWindow(QMainWindow):
         self._strip.settings_requested.connect(self._open_settings)
         self._strip.disconnect_requested.connect(self._on_disconnect_requested)
         self._strip.diagnostics_requested.connect(self._show_diagnostics)
+        self._pill.open_requested.connect(self._exit_mini_mode)
+        self._pill.stop_requested.connect(self._on_disconnect_requested)
+        self._pill.approve_requested.connect(self._pill_approve)
+        self._pill.deny_requested.connect(self._pill_deny)
+        self._pill.screen_toggled.connect(self._pill_screen_toggled)
+        self._pill.hold_pressed.connect(lambda: self._pill_hold(True))
+        self._pill.hold_released.connect(lambda: self._pill_hold(False))
         main_layout.addWidget(self._strip)
 
         # Raw connection state text; the mic/meter logic and tests key off it.
@@ -278,6 +289,11 @@ class MainWindow(QMainWindow):
         diagnostics_action.triggered.connect(self._show_diagnostics)
         self.menuBar().addAction(diagnostics_action)
 
+        mini_action = QAction("&Mini mode", self)
+        mini_action.setShortcut("Ctrl+Shift+M")
+        mini_action.triggered.connect(self._toggle_mini_mode)
+        self.menuBar().addAction(mini_action)
+
         # Ctrl+M toggles the mic gate from anywhere in the window.
         mute_shortcut = QShortcut(QKeySequence("Ctrl+M"), self)
         mute_shortcut.activated.connect(self._mute_btn.toggle)
@@ -384,6 +400,8 @@ class MainWindow(QMainWindow):
         menu = QMenu()
         show_action = menu.addAction("Show / Hide")
         show_action.triggered.connect(self._on_tray_show_hide)
+        mini_tray = menu.addAction("Mini mode")
+        mini_tray.triggered.connect(self._toggle_mini_mode)
         mute_action = menu.addAction("Mute mic")
         mute_action.triggered.connect(self._mute_btn.toggle)
         menu.addSeparator()
@@ -408,6 +426,92 @@ class MainWindow(QMainWindow):
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self._on_tray_show_hide()
+
+    # -- Mini mode (companion pill) --
+
+    @Slot()
+    def _toggle_mini_mode(self) -> None:
+        if self._pill.isVisible():
+            self._exit_mini_mode()
+        else:
+            self._refresh_pill()
+            self._pill.show()
+            self.showMinimized()
+
+    @Slot()
+    def _exit_mini_mode(self) -> None:
+        self._pill.hide()
+        self.showNormal()
+        self.activateWindow()
+
+    def _refresh_pill(self) -> None:
+        model = canonicalize_model_name(self._settings.model)
+        labels = {value: label for label, value in MODEL_OPTIONS}
+        self._pill.set_model(labels.get(model, model))
+        self._pill.set_connected(self._bridge is not None)
+        self._pill.set_screen_checked(self._sharing_active)
+
+    @Slot(str)
+    def _pill_approve(self, call_id: str) -> None:
+        self._approve_tool(call_id)
+        self._pill.resolve_pending(call_id)
+
+    @Slot(str)
+    def _pill_deny(self, call_id: str) -> None:
+        self._deny_tool(call_id)
+        self._pill.resolve_pending(call_id)
+
+    @Slot(bool)
+    def _pill_screen_toggled(self, checked: bool) -> None:
+        if self._bridge is None:
+            self._pill.set_screen_checked(self._sharing_active)
+            return
+        # Computer control needs the screen feed; never turn it off under it.
+        self._sharing_active = checked or self._settings.computer_use_enabled
+        self._bridge.send_command(
+            SetShareScreen(enabled=self._sharing_active, monitor=self._settings.screen_monitor)
+        )
+        self._update_share_banner()
+        self._pill.set_screen_checked(self._sharing_active)
+
+    def _pill_hold(self, held: bool) -> None:
+        # Push to talk: open the gate while held, then restore the mute state.
+        if self._bridge is not None:
+            self._bridge.send_command(SetMicGate(open=held or not self._mic_muted))
+
+    def _mirror_event_to_pill(self, event: AgentEvent) -> None:
+        pill = self._pill
+        if isinstance(event, ConnectionStateChanged):
+            pill.set_state(event.state.value)
+            pill.set_connected(event.state == ConnectionState.LIVE)
+            if event.state == ConnectionState.DISCONNECTED:
+                pill.set_latency_ms(None)
+                pill.set_caption("")
+                self._pill_caption = ""
+                pill.set_hold_enabled(False)
+            elif event.state == ConnectionState.LIVE:
+                pill.set_hold_enabled(True)
+        elif isinstance(event, PartialTranscript):
+            if event.source == TranscriptSource.MODEL:
+                pill.set_state("Speaking")
+                self._pill_caption = (self._pill_caption + event.text)[-_PILL_CAPTION_CHARS:]
+                pill.set_caption(self._pill_caption)
+        elif isinstance(event, TurnComplete):
+            if event.source == TranscriptSource.MODEL:
+                pill.set_state("Listening")
+                self._pill_caption = ""
+        elif isinstance(event, ToolApprovalRequested):
+            detail = " ".join(str(next(iter(event.args.values()), "")).split())[:_TOOL_ARG_CHARS]
+            pill.add_pending(event.call_id, event.name, detail)
+        elif isinstance(event, ToolResultSent):
+            pill.resolve_pending(event.call_id)
+            pill.show_toast(f"{'OK' if event.ok else 'FAILED'} {event.name}")
+        elif isinstance(event, ToolCallCancelled):
+            for call_id in event.call_ids:
+                pill.resolve_pending(call_id)
+        elif isinstance(event, DiagnosticsUpdate):
+            speech = event.timings.get("speech_end_to_first_audio_ms")
+            pill.set_latency_ms(speech.p50_ms if speech is not None else None)
 
     # -- Activity feed / usage / mic chip / share banner --
 
@@ -564,6 +668,7 @@ class MainWindow(QMainWindow):
 
     @Slot(object)  # PySide's stub loses AgentEvent unions.
     def _on_event(self, event: AgentEvent) -> None:
+        self._mirror_event_to_pill(event)
         if isinstance(event, ConnectionStateChanged):
             self._status_label.setText(event.state.value)
             self._strip.set_connection(event.state, event.detail)
@@ -730,11 +835,14 @@ class MainWindow(QMainWindow):
             return
         self._mic_meter.setValue(int(self._bridge.mic_level * 100))
         self._speaker_meter.setValue(int(self._bridge.speaker_level * 100))
+        if self._pill.isVisible():
+            self._pill.set_level(self._bridge.speaker_level)
 
     # -- Window close --
 
     def closeEvent(self, event: Any) -> None:
         self._meter_timer.stop()
+        self._pill.hide()
         # Minimize to the tray instead of quitting when the setting is on.
         if (
             not self._force_quit
@@ -761,6 +869,7 @@ class MainWindow(QMainWindow):
             self._bridge = None
         if self._tray is not None:
             self._tray.hide()
+        self._pill.close()
         event.accept()
 
 
