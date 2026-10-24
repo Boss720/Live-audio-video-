@@ -52,6 +52,25 @@
   RateLimitHit arrives. No Interrupt button (no command exists). Mock B (mini pill) not built.
 - Launch note: AppSettings.headless defaults True, so plain `main.py` runs the terminal mode; use
   `--no-headless` for the GUI. The venv's python is 3.11 (uv trampoline), not 3.14.
+- LIVE RESULTS 24 Oct 2026 (gemini-3.8-live, Free tier, speakers, computer_use + yolo on):
+  - Usage contract CONFIRMED: usage_metadata per message = that turn's full context + reply (prompt
+    4226/4269/4313 over 3 turns, total never accumulates). Summing for cost is right; UsageUpdate.prompt_tokens
+    is the context size (diagnostics "Context" tile correct). Cost over-estimates if context is cached.
+  - Replay with turn_complete=False: silent (0 audio bytes in 6 s). OK.
+  - Tool round trip on gemini-3.8-live with WHEN_IDLE: accepted, answer spoken after, no call loop. OK.
+  - UNVERIFIED: INTERRUPT on gemini-3.8-live-extended-thinking. Model says "let me check" but emits no
+    function call in 30 s (4 tries, with and without prior turns). Dropping NON_BLOCKING is rejected by the
+    server (1007 "BLOCKING function calls are not supported for this model"). Test again in the GUI.
+  - Voice session (8 turns): speech_end_to_first_audio p50 609 ms, p95 735 ms. Echo gate works: 1036
+    chunks x 40 ms = 41.4 s suppressed = speaker.played_ms 41.8 s. Context 15.9k. No reconnects.
+  - FOUND+FIXED: speaker.underruns counted every idle/prebuffer callback (12657). Now counts only
+    callbacks that were playing and ran dry (one per utterance end is expected). Test added.
+  - Frames at 1568 px (computer_use): ~294 KB avg (9.4 MB / 32), capture 78 ms. Larger than the 169 KB
+    estimate at 1280 px. screen_deduplicate is off by default so "skipped" shows a dash.
+  - Watch: mic.dropped_chunks 37 of 7335 (0.5%, 1.5 s of capture older than 400 ms, likely at connect).
+    speaker.high_water 11.9 s: server sends audio far faster than real time, so flush on barge-in matters.
+  - Not yet checked live: barge-in on speakers (expected disabled), wake-word false positives, click
+    accuracy at 1568 px, headless EOF, GoAway resume, late-ASR wake wait (M3).
 - NEXT: live session checks (M3, Wave 2, Wave 3 items in PLAN.md) using the new diagnostics page, then
   emit DisconnectReason as an event, then Mock B / Wave 5.
 
