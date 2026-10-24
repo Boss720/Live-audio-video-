@@ -56,6 +56,8 @@ class TurnComplete:
     text: str
     turn_id: int = 0
     timestamp: datetime = field(default_factory=_utc_now, compare=False)
+    # True when the model turn was cut off by a barge-in (text is what was heard).
+    interrupted: bool = False
 
 
 @dataclass(frozen=True, slots=True)

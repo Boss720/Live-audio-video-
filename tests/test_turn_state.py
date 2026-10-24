@@ -84,7 +84,10 @@ async def test_interrupted_emits_error_and_clears_model() -> None:
     assert events[0] == PartialTranscript(
         text="partial ", source=TranscriptSource.MODEL, turn_id=0
     )
-    assert events[1] == SessionError(message="interrupted", fatal=False)
+    assert events[1] == TurnComplete(
+        source=TranscriptSource.MODEL, text="partial ", turn_id=0, interrupted=True
+    )
+    assert events[2] == SessionError(message="interrupted", fatal=False)
 
     # After an interrupt the model transcript is cleared.
     events = ts.consume_server_content(

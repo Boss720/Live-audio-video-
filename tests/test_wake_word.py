@@ -314,7 +314,9 @@ async def test_addressed_voice_turn_passes_through(
             turn_complete=True,
         )
 
-        while not any(isinstance(e, TurnComplete) for e in events):
+        while not any(
+            isinstance(e, TurnComplete) and e.source == TranscriptSource.MODEL for e in events
+        ):
             events.append(await _next_event(event_queue))
 
         command_queue.put_nowait(Disconnect())
@@ -365,7 +367,9 @@ async def test_typed_text_is_exempt_from_gating(
         # The model replies without any voice transcript at all.
         fake_session.say("Four.", turn_complete=True)
 
-        while not any(isinstance(e, TurnComplete) for e in events):
+        while not any(
+            isinstance(e, TurnComplete) and e.source == TranscriptSource.MODEL for e in events
+        ):
             events.append(await _next_event(event_queue))
 
         command_queue.put_nowait(Disconnect())
@@ -408,7 +412,9 @@ async def test_gating_disabled_leaves_background_turns_alone(
             turn_complete=True,
         )
 
-        while not any(isinstance(e, TurnComplete) for e in events):
+        while not any(
+            isinstance(e, TurnComplete) and e.source == TranscriptSource.MODEL for e in events
+        ):
             events.append(await _next_event(event_queue))
 
         command_queue.put_nowait(Disconnect())

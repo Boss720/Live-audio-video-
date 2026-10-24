@@ -90,28 +90,21 @@ class TurnState:
         # the same packet, just as delayed timer emissions do.
         events.extend(self._drain_outbox())
 
-        # Interrupted: model was cut off. Surface as a non-fatal session error
-        # and reset the model transcript so the next turn starts fresh.
+        # Interrupted: the model was cut off. Surface a non-fatal session error
+        # and persist what was heard. History must stay chronological:
+        # previous user Q, interrupted model partial A, then (later) new user Q2.
+        # The barge-in speech arrives as subsequent input transcription and so
+        # starts a fresh USER turn; the pending USER text here is Q.
         if sc.interrupted:
-            self._cancel_timer(TranscriptSource.MODEL)
-            if self._pending_model:
-                events.append(
-                    PartialTranscript(
-                        text=self._pending_model,
-                        source=TranscriptSource.MODEL,
-                        turn_id=self._model_turn_id,
-                    )
-                )
-                self._model_text += self._pending_model
-                self._pending_model = ""
+            events.extend(self._complete_turn(TranscriptSource.USER))
+            events.extend(self._complete_turn(TranscriptSource.MODEL, interrupted=True))
             events.append(SessionError(message="interrupted", fatal=False))
-            self._model_text = ""
 
         # Turn complete: flush and emit the final transcript for the source(s).
+        # The user turn is emitted first so persisted history reads Q then A.
         if sc.turn_complete:
+            events.extend(self._complete_turn(TranscriptSource.USER))
             events.extend(self._complete_turn(TranscriptSource.MODEL))
-            if self._pending_user or self._user_text:
-                events.extend(self._complete_turn(TranscriptSource.USER))
 
         events.extend(self._drain_outbox())
         return events
@@ -181,7 +174,9 @@ class TurnState:
             PartialTranscript(text=pending, source=source, turn_id=turn_id)
         )
 
-    def _complete_turn(self, source: TranscriptSource) -> list[AgentEvent]:
+    def _complete_turn(
+        self, source: TranscriptSource, *, interrupted: bool = False
+    ) -> list[AgentEvent]:
         """Flush pending text and emit ``TurnComplete`` for ``source``."""
         self._cancel_timer(source)
         events: list[AgentEvent] = []
@@ -207,6 +202,7 @@ class TurnState:
                     source=source,
                     text=full_text,
                     turn_id=self._turn_id_for(source),
+                    interrupted=interrupted,
                 )
             )
             self._increment_turn_id(source)
