@@ -41,12 +41,17 @@ Needs live-socket check: usage per-turn assumption (if API turns out cumulative,
 INTERRUPT on extended thinking, real-device prebuffer/blocksize, speech-end metric values.
 
 ### Wave 3 — accuracy and safety hardening
-- [ ] Frames: 1280-1568 px, q80-85, subsampling=0, cursor overlay, pixel-hash dedup, reuse mss
-- [ ] Echo: gate mic during playback unless headset; later AEC
-- [ ] Tools: description truth-up, le=300, read cap 64 KB, shell head+tail, search/replace tools
-- [ ] Redaction patterns; redact before truncate; computer-use window/combination guard; clipboard restore
-- [ ] Shell cancellation tree kill + await; headless EOF; wake-word token matching
-- [ ] google-genai 2.28.0 -> 2.33.0
+- [x] Frames: 1280 px (1568 computer use), q82, subsampling=0, cursor overlay, pixel-hash (+cursor) dedup, reused mss — `1bf366c`
+- [x] Echo: gate mic (send silence) while speaker audible + 250 ms, unless headset; `echo_gate` auto|on|off. AEC later — `0f9ed8c`
+- [x] Tools: description truth-up, le=300, read cap 64 KB + continue hint, `edit_file` search/replace (gated like write_file) — `9d550e4`
+- [x] Redaction patterns; redact before truncate; shell head 2 KB + tail 6 KB; tree kill + reap on cancel/timeout; stdin DEVNULL — `af5372e`
+- [x] Computer: clipboard restore, key-combo deny set; headless stdin EOF disconnect; wake word whole/joined tokens + Soundex — `c6ad674`
+- [x] google-genai 2.28.0 -> 2.33.0 — `25e9cd7`
+
+Wave 3 result: 561 passed, 3 skipped (each commit tested alone from the index); mypy both scopes clean; ruff clean.
+Real capture smoke: 1280x720, ~169 KB/frame, 60 ms warm, unchanged screen skips encode; cursor visible.
+Needs live check: echo gate on speakers vs headset detection names, frame accuracy for clicks at 1568 px,
+headless EOF in voice mode, wake-word false positives in real ASR.
 
 ### Wave 4 — UI (mocks A, C, D)
 - [ ] Status strip, settings dialog, approvals rail, chat bubbles, diagnostics page

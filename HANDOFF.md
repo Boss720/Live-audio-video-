@@ -32,8 +32,16 @@
 - Usage contract DECIDED (unverified live): usage_metadata per message = per-turn increment.
   If a live session shows totals growing cumulatively, revert supervisor `_record_tier_usage` to diffing.
 - Live checks pending: M3 items above + Wave 2 items listed in PLAN.md.
-- NEXT: Wave 3 accuracy and safety hardening (PLAN.md). Partition: frames (media/screen), echo gate
-  (media/), tools/redaction (tools/, policy/), shell cancel + headless EOF + wake-word, genai bump last.
+- Wave 3 DONE, 6 commits: `0f9ed8c` echo gate, `1bf366c` frames, `af5372e` shell+redaction,
+  `9d550e4` tools+edit_file, `c6ad674` computer/headless/wake, `25e9cd7` genai 2.33.0 (venv updated
+  via `uv pip install`; venv has no pip). Gates: 561 passed, 3 skipped; mypy clean; ruff clean.
+- Wave 3 behaviour changes: mic sends silence while the speaker is audible on non-headset output
+  (no voice barge-in there; `echo_gate=off` restores it). Frames ~169 KB at q82/4:4:4. Store-style
+  redaction may hit prose like `password: required`. Headless exits on stdin EOF. start_line=0 now
+  fails validation. Wake word is looser for long names (Soundex within edit distance 2).
+- Live checks pending: M3, Wave 2 and Wave 3 items in PLAN.md.
+- NEXT: Wave 4 UI (mocks A, C, D in the review page): status strip, settings dialog, approvals
+  rail, chat bubbles, diagnostics page (use speech_end_to_first_audio_ms, frame dedup counters).
 
 ## Previous handoff — 24 October 2026 (historical)
 
