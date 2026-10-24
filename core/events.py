@@ -205,4 +205,5 @@ AgentEvent = (
     | UsageUpdate
     | DiagnosticsUpdate
     | TextNotSent
+    | DisconnectReason
 )

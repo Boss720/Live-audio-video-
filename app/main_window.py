@@ -656,7 +656,7 @@ class MainWindow(QMainWindow):
             self._note_disconnect(event)
 
     def _note_disconnect(self, event: object) -> None:
-        if isinstance(event, DisconnectReason):
+        if isinstance(event, DisconnectReason) and event.code != "user_request":
             self._diagnostics_page.note_reconnect(event.code, event.detail)
 
     def _add_tool_row(self, call_id: str, name: str, args: dict[str, Any]) -> None:

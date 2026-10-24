@@ -20,7 +20,7 @@ from google.genai.errors import APIError, ClientError
 
 from audit.journal import Journal
 from core.commands import Disconnect
-from core.events import RateLimitHit, TranscriptSource, TurnComplete
+from core.events import DisconnectReason, RateLimitHit, TranscriptSource, TurnComplete
 from core.session import LiveSession
 from persist.store import Store
 from settings.settings import AppSettings
@@ -113,6 +113,27 @@ async def test_rate_limit_error_emits_exactly_one_rate_limit_hit(
     assert hit.tpm_limit == 0
     assert hit.cooldown_seconds == 0.0
     assert reason.code == "quota"
+
+
+async def test_disconnect_reason_is_emitted_as_event(
+    monkeypatch: Any, settings: AppSettings, tmp_path: Path
+) -> None:
+    live = FakeLive()
+    _patch_common(monkeypatch, live)
+
+    async def drive(fake_session: Any) -> None:
+        fake_session.fail_next_receive(
+            ClientError(429, {"error": {"status": "RESOURCE_EXHAUSTED", "message": "quota"}})
+        )
+
+    live.on_connect(drive)
+    session, _commands, event_queue, journal = _make_session(settings, tmp_path)
+    try:
+        reason = await asyncio.wait_for(session.run(), timeout=5)
+    finally:
+        journal._close()
+    emitted = [e for e in _drain(event_queue) if isinstance(e, DisconnectReason)]
+    assert emitted == [reason]
 
 
 async def test_normal_close_emits_no_rate_limit_hit(

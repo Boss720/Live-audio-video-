@@ -26,6 +26,7 @@ from core.events import (
     ConnectionState,
     ConnectionStateChanged,
     DiagnosticsUpdate,
+    DisconnectReason,
     PartialTranscript,
     RateLimitHit,
     TextNotSent,
@@ -406,3 +407,12 @@ def test_failed_screen_grounding_preserves_unsent_text_and_newer_draft(
     assert "Fresh screen unavailable" in transcript
     assert window._input_edit.text() == (draft or "inspect this screen")
     assert "inspect this screen" not in window._diagnostics_label.toolTip()
+
+
+def test_disconnect_reason_counts_reconnects_except_user_request(window: MainWindow) -> None:
+    window._on_event(DisconnectReason("user_request"))
+    assert window._diagnostics_page.report()["summary"]["reconnects"] == 0
+    window._on_event(DisconnectReason("go_away", "30s"))
+    summary = window._diagnostics_page.report()["summary"]
+    assert summary["reconnects"] == 1
+    assert summary["last_disconnect_code"] == "go_away"

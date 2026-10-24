@@ -542,6 +542,7 @@ class LiveSession:
                     await self._on_connected(self)
 
                 reason = await self._run_session(session, policy)
+                await self._emit(reason)
                 return reason
 
         except Exception as exc:
@@ -554,6 +555,7 @@ class LiveSession:
                     detail=reason.detail,
                 )
             )
+            await self._emit(reason)
             return reason
         finally:
             await self._emit(ConnectionStateChanged(ConnectionState.DISCONNECTED))
