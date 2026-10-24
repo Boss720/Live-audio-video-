@@ -66,6 +66,7 @@ def settings(tmp_path: Path) -> AppSettings:
         wake_word_enabled=False,
         computer_use_enabled=False,
         yolo=False,
+        prefer_free_tier=False,  # cascade tests assume Tier 1 is the primary pool
         share_screen=False,
     )
 

@@ -59,6 +59,10 @@ _BUDGETS: dict[str, int] = {
     "quota": 3,
 }
 
+_STRICT_NEEDS_TIER1 = (
+    "Strict privacy needs a Tier 1 API key; add one or set privacy to relaxed."
+)
+
 # Rate-limit fallback ladder: once every (tier, model) pool is exhausted, back
 # off 15s -> 30s -> 60s -> 300s (plus jitter, capped at the last rung) and
 # emit a countdown tick every few seconds so the GUI can show the wait.
@@ -144,13 +148,16 @@ class Supervisor:
         if tier_manager is None:
             tier_manager = self._default_tier_manager()
         self._current_tier: TierConfig | None = None
-        if tier_manager is not None:
-            self._current_tier = tier_manager.get_tier("tier1") or tier_manager.get_tier(
-                "free"
-            )
-            if self._current_tier is None:
-                tier_manager = None  # no keys configured: legacy single-key path
         self._tier_manager = tier_manager
+        self._routing_error: str | None = None
+        if tier_manager is not None:
+            self._current_tier = self._preferred_tier()
+            if self._current_tier is None:
+                if self._strict_privacy() and tier_manager.get_tier("free") is not None:
+                    # Free key only under strict privacy: refuse to start (see run()).
+                    self._routing_error = _STRICT_NEEDS_TIER1
+                else:
+                    self._tier_manager = None  # no keys: legacy single-key path
         self._current_model = settings.model
         self._exhausted_pools: set[tuple[str, str]] = set()
         self._cascade_anchor: tuple[TierConfig, str] | None = None
@@ -193,6 +200,14 @@ class Supervisor:
 
     async def run(self) -> DisconnectReason:
         """Run the main reconnect loop until the user disconnects or we fail."""
+        if self._routing_error is not None:
+            await self._emit(SessionError(message=self._routing_error, fatal=True))
+            await self._emit(
+                ConnectionStateChanged(
+                    ConnectionState.FAILED, detail=self._routing_error
+                )
+            )
+            return DisconnectReason("auth_error", self._routing_error)
         self._resumption_handle = self._store.get_active_resumption_handle(self._run_id)
         self._dispatcher.set_respond_callback(self._respond_to_model)
         self._store.start_run(
@@ -654,7 +669,40 @@ class Supervisor:
         if self._tier_manager is None:
             return None
         other_name = "free" if tier.tier_name == "tier1" else "tier1"
+        if other_name not in self._allowed_tier_names():
+            return None  # strict privacy: never cross onto the Free tier
         return self._tier_manager.get_tier(other_name)
+
+    # -- routing policy (single source for startup, fallback and reset) -----
+
+    def _strict_privacy(self) -> bool:
+        return self._settings.privacy_mode == "strict"
+
+    def _allowed_tier_names(self) -> list[str]:
+        """Tier names this session may use, most preferred first.
+
+        strict: Tier 1 only (data on Free may be used for training).
+        relaxed/auto: ``prefer_free_tier`` picks the order (Free first saves
+        paid quota; otherwise Tier 1 first); the other tier stays a fallback.
+        We deliberately do not use ``TierManager.select_tier``: it ranks by
+        live TPM headroom/modality, which would ignore the user's explicit
+        ``prefer_free_tier`` choice.
+        """
+        if self._strict_privacy():
+            return ["tier1"]
+        if self._settings.prefer_free_tier:
+            return ["free", "tier1"]
+        return ["tier1", "free"]
+
+    def _preferred_tier(self) -> TierConfig | None:
+        """First configured tier permitted by the routing policy, or ``None``."""
+        if self._tier_manager is None:
+            return None
+        for name in self._allowed_tier_names():
+            tier = self._tier_manager.get_tier(name)
+            if tier is not None:
+                return tier
+        return None
 
     def _switch_tier(self, tier: TierConfig) -> None:
         """Move the next epoch to ``tier``'s API key, keeping the current model.
@@ -688,11 +736,7 @@ class Supervisor:
         if self._tier_manager is None:
             return
         self._current_model = self._settings.model
-        self._current_tier = (
-            self._tier_manager.get_tier("tier1")
-            or self._tier_manager.get_tier("free")
-            or self._current_tier
-        )
+        self._current_tier = self._preferred_tier() or self._current_tier
 
     async def _rate_limit_backoff(self) -> DisconnectReason | None:
         """Back off after every tier/model pool is exhausted.
