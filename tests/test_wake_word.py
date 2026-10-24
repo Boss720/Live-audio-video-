@@ -441,8 +441,10 @@ def test_gui_loads_wake_word_controls(qtbot: Any, tmp_path: Path) -> None:
     window = MainWindow(settings)
     qtbot.addWidget(window)
 
-    assert window._wake_word_check.isChecked()
-    assert window._wake_word_edit.text() == "Zephyr"
+    dialog = window._open_settings()
+    assert dialog._bindings["wake_word_enabled"].get() is True
+    assert dialog._bindings["wake_word"].get() == "Zephyr"
+    dialog.close()
 
 
 def test_gui_wake_word_round_trips_into_built_settings(
@@ -452,14 +454,16 @@ def test_gui_wake_word_round_trips_into_built_settings(
     window = MainWindow(settings)
     qtbot.addWidget(window)
 
-    assert not window._wake_word_check.isChecked()
-    assert window._wake_word_edit.text() == "Bongo"
+    dialog = window._open_settings()
+    assert dialog._bindings["wake_word_enabled"].get() is False
+    assert dialog._bindings["wake_word"].get() == "Bongo"
 
-    window._wake_word_check.setChecked(True)
-    window._wake_word_edit.setText("  Zephyr  ")
-    built = window._build_settings()
+    dialog._bindings["wake_word_enabled"].set(True)
+    dialog._bindings["wake_word"].set("  Zephyr  ")
+    built = dialog.build_settings()
     assert built.wake_word_enabled is True
     assert built.wake_word == "Zephyr"
+    dialog.close()
 
 
 # ----------------------------------------------------------------------

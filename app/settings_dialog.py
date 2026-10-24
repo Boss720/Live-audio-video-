@@ -66,16 +66,10 @@ MODEL_OPTIONS: tuple[tuple[str, str], ...] = (
     ),
 )
 
+# Fields the main window can apply to a running session (a live command or
+# GUI-local). Everything else needs a reconnect.
 LIVE_FIELDS: frozenset[str] = frozenset(
-    {
-        "yolo",
-        "share_screen",
-        "wake_word_enabled",
-        "wake_word",
-        "wake_word_aliases",
-        "minimize_to_tray",
-        "echo_gate",
-    }
+    {"yolo", "share_screen", "screen_monitor", "minimize_to_tray"}
 )
 
 DevicePairs = list[tuple[str, str | None]]

@@ -28,7 +28,7 @@ from core.events import TranscriptSource
 
 MAX_ITEMS = 500
 _MONO = "Consolas, 'Cascadia Mono', monospace"
-_SPEAKING_TEXT = "Model speaking… Esc to interrupt"
+_SPEAKING_TEXT = "Model speaking…"
 
 
 def _now() -> str:

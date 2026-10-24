@@ -97,7 +97,9 @@ def test_gui_loads_system_prompt_into_box(
     window = MainWindow(settings)
     qtbot.addWidget(window)
 
-    assert window._system_prompt_edit.toPlainText() == "Be terse."
+    dialog = window._open_settings()
+    assert dialog._bindings["system_prompt"].get() == "Be terse."
+    dialog.close()
 
 
 def test_gui_box_round_trips_into_built_settings(
@@ -107,8 +109,10 @@ def test_gui_box_round_trips_into_built_settings(
     window = MainWindow(settings)
     qtbot.addWidget(window)
 
-    assert window._system_prompt_edit.toPlainText() == ""
+    dialog = window._open_settings()
+    assert dialog._bindings["system_prompt"].get() == ""
 
-    window._system_prompt_edit.setPlainText("  Speak like a robot.  ")
-    built = window._build_settings()
+    dialog._bindings["system_prompt"].set("  Speak like a robot.  ")
+    built = dialog.build_settings()
     assert built.system_prompt == "Speak like a robot."
+    dialog.close()

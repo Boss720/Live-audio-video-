@@ -167,9 +167,22 @@ QCheckBox::indicator:checked {{
 }}
 
 /* -- Transcript / activity ------------------------------------------------- */
-QTextEdit, QListWidget {{
+QTextEdit, QListWidget, QTableWidget {{
     {_panel_qss("rgba(6, 13, 31, 0.55)")}
     padding: 8px;
+}}
+QTableWidget {{
+    gridline-color: {GLASS_BORDER};
+}}
+QHeaderView::section {{
+    background: {NAVY_800};
+    color: {TEXT_MUTED};
+    border: none;
+    padding: 4px;
+}}
+QTableCornerButton::section {{
+    background: {NAVY_800};
+    border: none;
 }}
 QTabWidget::pane {{
     {_panel_qss()}

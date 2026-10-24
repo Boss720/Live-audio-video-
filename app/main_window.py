@@ -7,24 +7,16 @@ Qt objects and ``AgentEvent`` / ``AgentCommand`` dataclasses.
 
 from __future__ import annotations
 
-import json
 import logging
 import sys
 from datetime import datetime
 from enum import StrEnum
-from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from PySide6.QtCore import Qt, QTimer, Slot
-from PySide6.QtGui import QAction, QKeySequence, QShortcut, QTextCursor
+from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
-    QComboBox,
-    QDoubleSpinBox,
-    QFileDialog,
-    QFrame,
-    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -33,20 +25,22 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
-    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
     QStyle,
     QSystemTrayIcon,
-    QTabWidget,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
+from app.approvals_rail import ApprovalsRail
 from app.bridge import Bridge
-from app.theme import DANGER, MAIN_QSS, SUCCESS, TEXT_MUTED, apply_glass_shadow
+from app.chat_view import ChatView
+from app.diagnostics_page import DiagnosticsPage
+from app.settings_dialog import LIVE_FIELDS, MODEL_OPTIONS, SettingsDialog
+from app.status_strip import StatusStrip
+from app.theme import DANGER, MAIN_QSS, SUCCESS, TEXT_MUTED
 from core.commands import (
     ApproveTool,
     CancelTool,
@@ -64,7 +58,9 @@ from core.events import (
     ConnectionStateChanged,
     ContextReset,
     DiagnosticsUpdate,
+    DisconnectReason,
     PartialTranscript,
+    RateLimitHit,
     SessionError,
     SessionExpiring,
     TextNotSent,
@@ -76,27 +72,15 @@ from core.events import (
     TurnComplete,
     UsageUpdate,
 )
-from media import devices as media_devices
 from obs.logging_setup import get_run_id, setup_logging
 from settings.secrets import get_api_key, get_free_api_key, set_api_key
-from settings.settings import (
-    AVAILABLE_VOICES,
-    AppSettings,
-    canonicalize_model_name,
-)
+from settings.settings import AppSettings, canonicalize_model_name
 
-_AVAILABLE_VOICES = AVAILABLE_VOICES
-_MODES = ("text", "voice", "both")
-_MODEL_OPTIONS = (
-    ("Gemini 3.8 Live", "gemini-3.8-live"),
-    ("Gemini 3.8 Live · Extended Thinking", "gemini-3.8-live-extended-thinking"),
-    ("Gemini 3.1 Flash Live Preview", "gemini-3.1-flash-live-preview"),
-    (
-        "Gemini 2.5 Flash Native Audio Preview",
-        "gemini-2.5-flash-native-audio-preview-12-2025",
-    ),
-)
 _METER_INTERVAL_MS = 33
+_RAIL_WIDTH = 340
+_TOOL_SUMMARY_CHARS = 120
+_TOOL_ARG_CHARS = 60
+_TIER_NAMES = {"free": "Free", "tier1": "Tier 1"}
 
 logger = logging.getLogger(__name__)
 
@@ -122,89 +106,6 @@ _MIC_CHIP_TEXT = {
 }
 
 
-class _ToolCard(QFrame):
-    """Small widget that asks the user to approve/deny/cancel a tool call."""
-
-    def __init__(self, event: ToolApprovalRequested, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.call_id = event.call_id
-        self.pending = True
-        self.setObjectName("glassCard")
-        self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setAccessibleName(f"Tool approval request: {event.name}")
-        apply_glass_shadow(self, blur=18, dy=4)
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(4)
-        layout.setContentsMargins(10, 8, 10, 8)
-
-        summaries = {
-            "write_file": "Write a file", "edit_file": "Edit a file",
-            "read_file": "Read a file",
-            "run_command": "Run a command", "list_directory": "List a directory",
-            "computer_use": "Control the computer",
-        }
-        summary = summaries.get(event.name, event.name.replace("_", " ").capitalize())
-        self._summary = QLabel(summary)
-        self._status = QLabel("Pending approval...")
-        summary_layout = QHBoxLayout()
-        summary_layout.addWidget(self._summary, 1)
-        summary_layout.addWidget(self._status)
-        layout.addLayout(summary_layout)
-        target = event.args.get("path") or event.args.get("command")
-        if target:
-            target_label = QLabel(str(target))
-            target_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            layout.addWidget(target_label)
-        self._details = QPlainTextEdit()
-        self._details.setReadOnly(True)
-        self._details.setPlainText(json.dumps(event.args, ensure_ascii=False, indent=2))
-        self._details.setAccessibleName(f"Arguments for {event.name}")
-        self._details.setMaximumHeight(96)
-        self._details.setVisible(False)
-        details_btn = QPushButton("Show &details")
-        details_btn.setCheckable(True)
-        details_btn.setAccessibleName(f"Inspect arguments for {event.name}")
-        details_btn.toggled.connect(self._details.setVisible)
-        if event.allow_text:
-            layout.addWidget(QLabel(f"Policy: {event.allow_text}"))
-
-        for label in self.findChildren(QLabel):
-            label.setTextFormat(Qt.TextFormat.PlainText)
-            label.setWordWrap(True)
-
-        btn_layout = QHBoxLayout()
-        # Mnemonics make the full approve/deny cycle keyboard-only.
-        self._approve_btn = QPushButton("&Approve")
-        self._approve_btn.setAccessibleName(f"Approve {event.name}")
-        self._deny_btn = QPushButton("&Deny")
-        self._deny_btn.setAccessibleName(f"Deny {event.name}")
-        self._cancel_btn = QPushButton("&Cancel")
-        self._cancel_btn.setAccessibleName(f"Cancel {event.name}")
-        btn_layout.addWidget(self._approve_btn)
-        btn_layout.addWidget(self._deny_btn)
-        btn_layout.addWidget(self._cancel_btn)
-        btn_layout.addStretch()
-        btn_layout.addWidget(details_btn)
-        layout.addLayout(btn_layout)
-        layout.addWidget(self._details)
-
-    def set_result(self, message: str) -> None:
-        """Disable controls and show the resolved outcome."""
-        self.pending = False
-        self._status.setText(message)
-        self._approve_btn.setEnabled(False)
-        self._deny_btn.setEnabled(False)
-        self._cancel_btn.setEnabled(False)
-
-    def set_approved(self) -> None:
-        """Stop asking for a decision while keeping an in-flight tool cancellable."""
-        self.pending = False
-        self._status.setText("Approved · waiting for result")
-        self._approve_btn.setEnabled(False)
-        self._deny_btn.setEnabled(False)
-
-
 class MainWindow(QMainWindow):
     """Primary GUI window for the Gemini Live Agent."""
 
@@ -213,21 +114,23 @@ class MainWindow(QMainWindow):
         self._settings = settings
         self._bridge: Bridge | None = None
         self._last_source: TranscriptSource | None = None
-        self._tool_cards: dict[str, _ToolCard] = {}
+        self._tool_rows: set[str] = set()
+        self._tier = ""
+        self._connected_mode: str | None = None
         self._mic_muted = False
         self._mic_state = _MicState.OFF
         self._sharing_active = False
         self._force_quit = False
         self._tray: QSystemTrayIcon | None = None
         self._tray_message_shown = False
-        self._settings_dirty = False
+        self._settings_dialog: SettingsDialog | None = None
+        self._diagnostics_page = DiagnosticsPage(self)
 
         self.setWindowTitle("Gemini Live Agent")
-        self.setMinimumSize(720, 520)
+        self.setMinimumSize(960, 600)
         self._build_ui()
-        self._populate_devices()
-        self._load_settings_to_ui()
-        self._watch_settings_changes()
+        self._tier = self._tier_label()
+        self._refresh_strip()
         self._setup_tray()
 
     # -- UI construction --
@@ -239,10 +142,93 @@ class MainWindow(QMainWindow):
         main_layout = QVBoxLayout(central)
         main_layout.setSpacing(6)
 
-        # Status bar + mic state chip + connect button
-        top_layout = QHBoxLayout()
+        # Status strip: connection, model, latency, cost, YOLO, screen, actions.
+        self._strip = StatusStrip()
+        self._strip.settings_requested.connect(self._open_settings)
+        self._strip.disconnect_requested.connect(self._on_disconnect_requested)
+        self._strip.diagnostics_requested.connect(self._show_diagnostics)
+        main_layout.addWidget(self._strip)
+
+        # Raw connection state text; the mic/meter logic and tests key off it.
         self._status_label = QLabel("Disconnected")
         self._status_label.setObjectName("statusChip")
+
+        # Screen-share indicator banner (visible only while sharing + connected)
+        self._share_banner = QLabel("● Sharing screen — the model can see your screen")
+        self._share_banner.setObjectName("shareBanner")
+        self._share_banner.setAccessibleName("Screen sharing indicator")
+        self._share_banner.setVisible(False)
+        main_layout.addWidget(self._share_banner)
+
+        # Centre: chat (left, stretch) + right rail (approvals, meters, activity)
+        centre = QHBoxLayout()
+        centre.setSpacing(8)
+
+        chat_column = QVBoxLayout()
+        transcript_actions = QHBoxLayout()
+        self._copy_transcript_btn = QPushButton("Copy transcript")
+        self._copy_transcript_btn.clicked.connect(self._copy_transcript)
+        self._clear_transcript_btn = QPushButton("Clear transcript")
+        self._clear_transcript_btn.clicked.connect(self._clear_transcript)
+        transcript_actions.addStretch()
+        transcript_actions.addWidget(self._copy_transcript_btn)
+        transcript_actions.addWidget(self._clear_transcript_btn)
+        chat_column.addLayout(transcript_actions)
+        self._chat = ChatView()
+        self._chat.setAccessibleName("Conversation transcript")
+        self._chat.setMinimumHeight(70)
+        chat_column.addWidget(self._chat, 1)
+        centre.addLayout(chat_column, 1)
+
+        rail_column = QVBoxLayout()
+        rail_column.setContentsMargins(0, 0, 0, 0)
+        self._approvals = ApprovalsRail()
+        self._approvals.approve_requested.connect(self._approve_tool)
+        self._approvals.deny_requested.connect(self._deny_tool)
+        self._approvals.cancel_requested.connect(self._cancel_tool)
+        self._approvals_scroll = QScrollArea()
+        self._approvals_scroll.setAccessibleName("Tool approvals")
+        self._approvals_scroll.setWidgetResizable(True)
+        self._approvals_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._approvals_scroll.setWidget(self._approvals)
+        self._approvals_scroll.setMinimumHeight(160)
+        rail_column.addWidget(self._approvals_scroll, 2)
+
+        meter_layout = QHBoxLayout()
+        self._mic_meter = QProgressBar()
+        self._mic_meter.setRange(0, 100)
+        self._mic_meter.setTextVisible(True)
+        self._mic_meter.setFormat("Mic: %p%")
+        self._speaker_meter = QProgressBar()
+        self._speaker_meter.setRange(0, 100)
+        self._speaker_meter.setTextVisible(True)
+        self._speaker_meter.setFormat("Speaker: %p%")
+        meter_layout.addWidget(self._mic_meter)
+        meter_layout.addWidget(self._speaker_meter)
+        rail_column.addLayout(meter_layout)
+
+        self._activity = QListWidget()
+        self._activity.setAccessibleName("Activity feed")
+        rail_column.addWidget(self._activity, 1)
+
+        rail_widget = QWidget()
+        rail_widget.setFixedWidth(_RAIL_WIDTH)
+        rail_widget.setLayout(rail_column)
+        centre.addWidget(rail_widget)
+        main_layout.addLayout(centre, 1)
+
+        # Composer: input, Send, Mute mic, mic chip, Connect
+        bottom_layout = QHBoxLayout()
+        self._input_edit = QLineEdit()
+        self._input_edit.setPlaceholderText("Type a message and press Enter...")
+        self._input_edit.setAccessibleName("Message input")
+        self._input_edit.returnPressed.connect(self._on_send_clicked)
+        self._send_btn = QPushButton("Send")
+        self._send_btn.clicked.connect(self._on_send_clicked)
+        self._mute_btn = QPushButton("Mute mic")
+        self._mute_btn.setCheckable(True)
+        self._mute_btn.setAccessibleName("Toggle microphone mute")
+        self._mute_btn.toggled.connect(self._on_mute_toggled)
         self._mic_chip = QLabel(_MIC_CHIP_TEXT[_MicState.OFF])
         self._mic_chip.setStyleSheet(_MIC_CHIP_STYLES[_MicState.OFF])
         self._mic_chip.setAccessibleName("Microphone state")
@@ -257,263 +243,11 @@ class MainWindow(QMainWindow):
         # and computer use now refuses to type into its own window at all.
         self._connect_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._connect_btn.clicked.connect(self._on_connect_clicked)
-        top_layout.addWidget(self._status_label)
-        top_layout.addWidget(self._mic_chip)
-        top_layout.addStretch()
-        top_layout.addWidget(self._connect_btn)
-        main_layout.addLayout(top_layout)
-
-        # Settings panel
-        self._settings_toggle_btn = QPushButton("Hide settings")
-        self._settings_toggle_btn.setCheckable(True)
-        self._settings_toggle_btn.setChecked(True)
-        self._settings_toggle_btn.setAccessibleName("Show or hide settings")
-        self._settings_toggle_btn.toggled.connect(self._toggle_settings_panel)
-        settings_header = QHBoxLayout()
-        settings_header.addWidget(self._settings_toggle_btn)
-        self._settings_state_label = QLabel("Saved settings · applies on next connect")
-        self._settings_state_label.setAccessibleName("Settings save and apply status")
-        self._settings_state_label.setWordWrap(True)
-        settings_header.addWidget(self._settings_state_label, 1)
-        main_layout.addLayout(settings_header)
-
-        self._settings_widget = QWidget()
-        self._settings_widget.setObjectName("glassPanel")
-        apply_glass_shadow(self._settings_widget)
-        settings_layout = QGridLayout(self._settings_widget)
-        settings_layout.setSpacing(6)
-        self._settings_scroll = QScrollArea()
-        self._settings_scroll.setAccessibleName("Session settings")
-        self._settings_scroll.setWidgetResizable(True)
-        self._settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._settings_scroll.setWidget(self._settings_widget)
-        self._settings_scroll.setMaximumHeight(160)
-        main_layout.addWidget(self._settings_scroll)
-
-        row = 0
-        self._model_combo = QComboBox()
-        self._model_combo.setEditable(True)
-        self._model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self._model_combo.setAccessibleName("Gemini Live model")
-        self._model_combo.setToolTip(
-            "Choose a configured model or enter a custom Gemini Live model ID."
-        )
-        for label, model in _MODEL_OPTIONS:
-            self._model_combo.addItem(label, model)
-        for model in dict.fromkeys(
-            (self._settings.model, self._settings.fallback_model or "")
-        ):
-            if model and self._model_combo.findData(model) < 0:
-                self._model_combo.addItem(model, model)
-        settings_layout.addWidget(QLabel("Model:"), row, 0)
-        settings_layout.addWidget(self._model_combo, row, 1)
-
-        row += 1
-        self._voice_combo = QComboBox()
-        self._voice_combo.addItems(_AVAILABLE_VOICES)
-        settings_layout.addWidget(QLabel("Voice:"), row, 0)
-        settings_layout.addWidget(self._voice_combo, row, 1)
-
-        row += 1
-        self._mode_combo = QComboBox()
-        self._mode_combo.addItems([m.title() for m in _MODES])
-        settings_layout.addWidget(QLabel("Mode:"), row, 0)
-        settings_layout.addWidget(self._mode_combo, row, 1)
-
-        row += 1
-        self._share_screen_check = QCheckBox("Share screen")
-        self._fps_spin = QDoubleSpinBox()
-        self._fps_spin.setRange(0.1, 30.0)
-        self._fps_spin.setDecimals(1)
-        self._fps_spin.setSuffix(" fps")
-        fps_layout = QHBoxLayout()
-        fps_layout.addWidget(self._share_screen_check)
-        fps_layout.addWidget(QLabel("FPS:"))
-        fps_layout.addWidget(self._fps_spin)
-        fps_layout.addStretch()
-        settings_layout.addLayout(fps_layout, row, 0, 1, 2)
-
-        row += 1
-        self._screen_deduplicate_check = QCheckBox("Skip identical screen frames (experimental)")
-        self._screen_deduplicate_check.setToolTip(
-            "Opt in to skipping exact repeated frames. Image size and quality stay unchanged."
-        )
-        settings_layout.addWidget(self._screen_deduplicate_check, row, 0, 1, 2)
-
-        row += 1
-        self._audio_chunk_combo = QComboBox()
-        self._audio_chunk_combo.setAccessibleName("Audio chunk duration")
-        for duration in (20, 40, 100):
-            self._audio_chunk_combo.addItem(f"{duration} ms", duration)
-        self._audio_chunk_combo.setToolTip(
-            "Microphone packet duration; applies on next connect. Default: 100 ms."
-        )
-        settings_layout.addWidget(QLabel("Audio chunks:"), row, 0)
-        settings_layout.addWidget(self._audio_chunk_combo, row, 1)
-
-        row += 1
-        self._computer_use_check = QCheckBox("Computer control (mouse/keyboard)")
-        self._computer_use_check.setToolTip(
-            "Let the agent move the mouse, click, type, press keys and scroll. "
-            "Implies screen sharing; actions require approval unless yolo is on."
-        )
-        settings_layout.addWidget(self._computer_use_check, row, 0, 1, 2)
-
-        row += 1
-        self._input_device_combo = QComboBox()
-        self._input_device_combo.addItem("(default)", None)
-        settings_layout.addWidget(QLabel("Input device:"), row, 0)
-        settings_layout.addWidget(self._input_device_combo, row, 1)
-
-        row += 1
-        self._output_device_combo = QComboBox()
-        self._output_device_combo.addItem("(default)", None)
-        settings_layout.addWidget(QLabel("Output device:"), row, 0)
-        settings_layout.addWidget(self._output_device_combo, row, 1)
-
-        row += 1
-        self._yolo_check = QCheckBox("Skip approvals (yolo)")
-        settings_layout.addWidget(self._yolo_check, row, 0, 1, 2)
-
-        row += 1
-        self._tray_check = QCheckBox("Minimize to tray on close")
-        settings_layout.addWidget(self._tray_check, row, 0, 1, 2)
-
-        row += 1
-        self._system_prompt_edit = QPlainTextEdit()
-        self._system_prompt_edit.setPlaceholderText(
-            "Extra instructions for the model (optional). Appended to the "
-            "built-in system prompt; applies on the next connect."
-        )
-        self._system_prompt_edit.setMaximumHeight(72)
-        self._system_prompt_edit.setAccessibleName("Custom system prompt")
-        system_prompt_label = QLabel("System prompt:")
-        settings_layout.addWidget(
-            system_prompt_label, row, 0, Qt.AlignmentFlag.AlignTop
-        )
-        settings_layout.addWidget(self._system_prompt_edit, row, 1)
-
-        row += 1
-        self._wake_word_check = QCheckBox("Wake-word gating (voice)")
-        self._wake_word_edit = QLineEdit()
-        self._wake_word_edit.setPlaceholderText("e.g. Leroy")
-        self._wake_word_edit.setAccessibleName("Wake word")
-        self._wake_word_edit.setMaximumWidth(180)
-        wake_layout = QHBoxLayout()
-        wake_layout.addWidget(self._wake_word_check)
-        wake_layout.addWidget(QLabel("Wake word:"))
-        wake_layout.addWidget(self._wake_word_edit)
-        wake_layout.addStretch()
-        settings_layout.addLayout(wake_layout, row, 0, 1, 2)
-
-        row += 1
-        self._working_dir_edit = QLineEdit()
-        browse_btn = QPushButton("Browse...")
-        browse_btn.clicked.connect(self._on_browse_working_dir)
-        wd_layout = QHBoxLayout()
-        wd_layout.addWidget(self._working_dir_edit)
-        wd_layout.addWidget(browse_btn)
-        settings_layout.addWidget(QLabel("Working dir:"), row, 0)
-        settings_layout.addLayout(wd_layout, row, 1)
-
-        row += 1
-        self._save_settings_btn = QPushButton("Save settings")
-        self._save_settings_btn.clicked.connect(self._on_save_settings)
-        settings_layout.addWidget(self._save_settings_btn, row, 1)
-        for field_label in self._settings_widget.findChildren(QLabel):
-            index = settings_layout.indexOf(field_label)
-            field = None
-            if index >= 0:
-                field_row, _, _, _ = cast(
-                    tuple[int, int, int, int], settings_layout.getItemPosition(index)
-                )
-                field = settings_layout.itemAtPosition(field_row, 1)
-            field_widget = field.widget() if field is not None else None
-            if field_widget is not None:
-                field_label.setBuddy(field_widget)
-
-        # Screen-share indicator banner (visible only while sharing + connected)
-        self._share_banner = QLabel("● Sharing screen — the model can see your screen")
-        self._share_banner.setObjectName("shareBanner")
-        self._share_banner.setAccessibleName("Screen sharing indicator")
-        self._share_banner.setVisible(False)
-        main_layout.addWidget(self._share_banner)
-
-        # Transcript + activity feed tabs
-        self._tabs = QTabWidget()
-
-        self._transcript = QTextEdit()
-        self._transcript.setReadOnly(True)
-        self._transcript.setPlaceholderText("Transcript will appear here...")
-        self._transcript.setAccessibleName("Conversation transcript")
-        self._transcript.setMinimumHeight(70)
-        transcript_page = QWidget()
-        transcript_layout = QVBoxLayout(transcript_page)
-        transcript_layout.setContentsMargins(0, 0, 0, 0)
-        transcript_actions = QHBoxLayout()
-        self._copy_transcript_btn = QPushButton("Copy transcript")
-        self._copy_transcript_btn.clicked.connect(self._copy_transcript)
-        self._clear_transcript_btn = QPushButton("Clear transcript")
-        self._clear_transcript_btn.clicked.connect(self._clear_transcript)
-        transcript_actions.addStretch()
-        transcript_actions.addWidget(self._copy_transcript_btn)
-        transcript_actions.addWidget(self._clear_transcript_btn)
-        transcript_layout.addLayout(transcript_actions)
-        transcript_layout.addWidget(self._transcript)
-        self._tabs.addTab(transcript_page, "Transcript")
-
-        self._activity = QListWidget()
-        self._activity.setAccessibleName("Activity feed")
-        self._tabs.addTab(self._activity, "Activity")
-
-        main_layout.addWidget(self._tabs, stretch=1)
-
-        # Tool approvals
-        self._approval_count_label = QLabel("0 pending approvals")
-        self._approval_count_label.setAccessibleName("Pending tool approvals")
-        self._approval_count_label.setVisible(False)
-        main_layout.addWidget(self._approval_count_label)
-        self._tool_scroll = QScrollArea()
-        self._tool_scroll.setWidgetResizable(True)
-        self._tool_container = QWidget()
-        self._tool_container.setObjectName("toolContainer")
-        self._tool_layout = QVBoxLayout(self._tool_container)
-        self._tool_layout.addStretch()
-        self._tool_scroll.setWidget(self._tool_container)
-        self._tool_scroll.setMaximumHeight(180)
-        self._tool_scroll.setMinimumHeight(160)
-        self._tool_scroll.setVisible(False)
-        main_layout.addWidget(self._tool_scroll)
-
-        # Audio meters
-        meter_layout = QHBoxLayout()
-        self._mic_meter = QProgressBar()
-        self._mic_meter.setRange(0, 100)
-        self._mic_meter.setTextVisible(True)
-        self._mic_meter.setFormat("Mic: %p%")
-        self._speaker_meter = QProgressBar()
-        self._speaker_meter.setRange(0, 100)
-        self._speaker_meter.setTextVisible(True)
-        self._speaker_meter.setFormat("Speaker: %p%")
-        meter_layout.addWidget(self._mic_meter)
-        meter_layout.addWidget(self._speaker_meter)
-        main_layout.addLayout(meter_layout)
-
-        # Input bar + mic mute
-        bottom_layout = QHBoxLayout()
-        self._input_edit = QLineEdit()
-        self._input_edit.setPlaceholderText("Type a message and press Enter...")
-        self._input_edit.setAccessibleName("Message input")
-        self._input_edit.returnPressed.connect(self._on_send_clicked)
-        self._send_btn = QPushButton("Send")
-        self._send_btn.clicked.connect(self._on_send_clicked)
-        self._mute_btn = QPushButton("Mute mic")
-        self._mute_btn.setCheckable(True)
-        self._mute_btn.setAccessibleName("Toggle microphone mute")
-        self._mute_btn.toggled.connect(self._on_mute_toggled)
         bottom_layout.addWidget(self._input_edit)
         bottom_layout.addWidget(self._send_btn)
         bottom_layout.addWidget(self._mute_btn)
+        bottom_layout.addWidget(self._mic_chip)
+        bottom_layout.addWidget(self._connect_btn)
         main_layout.addLayout(bottom_layout)
 
         # Usage panel in the status bar (updated on UsageUpdate events)
@@ -525,6 +259,7 @@ class MainWindow(QMainWindow):
         self._diagnostics_label.setToolTip(
             "Local application spans only; not provider model or hardware latency."
         )
+        self.statusBar().addWidget(self._status_label)
         self.statusBar().addWidget(self._diagnostics_label, 1)
 
         # Meter timer
@@ -538,166 +273,100 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         self.menuBar().addAction(exit_action)
 
+        diagnostics_action = QAction("&Diagnostics", self)
+        diagnostics_action.setShortcut("Ctrl+Shift+D")
+        diagnostics_action.triggered.connect(self._show_diagnostics)
+        self.menuBar().addAction(diagnostics_action)
+
         # Ctrl+M toggles the mic gate from anywhere in the window.
         mute_shortcut = QShortcut(QKeySequence("Ctrl+M"), self)
         mute_shortcut.activated.connect(self._mute_btn.toggle)
 
-    def _populate_devices(self) -> None:
-        """Fill the input/output device combos from sounddevice."""
-        try:
-            for device in media_devices.list_input_devices():
-                name = device.get("name")
-                if name:
-                    self._input_device_combo.addItem(name, name)
-        except Exception as exc:
-            logger.warning("Failed to enumerate input devices: %s", exc)
-
-        try:
-            for device in media_devices.list_output_devices():
-                name = device.get("name")
-                if name:
-                    self._output_device_combo.addItem(name, name)
-        except Exception as exc:
-            logger.warning("Failed to enumerate output devices: %s", exc)
-
-    def _load_settings_to_ui(self) -> None:
-        """Populate controls from the initial AppSettings."""
-        canonical_model = canonicalize_model_name(self._settings.model)
-        model_index = self._model_combo.findData(canonical_model)
-        if model_index >= 0:
-            self._model_combo.setCurrentIndex(model_index)
-        else:
-            self._model_combo.setEditText(canonical_model)
-        self._voice_combo.setCurrentText(self._settings.voice)
-        self._mode_combo.setCurrentText(self._settings.mode.title())
-        self._share_screen_check.setChecked(self._settings.share_screen)
-        self._fps_spin.setValue(self._settings.screen_fps)
-        self._screen_deduplicate_check.setChecked(self._settings.screen_deduplicate)
-        self._audio_chunk_combo.setCurrentIndex(
-            self._audio_chunk_combo.findData(self._settings.audio_chunk_duration_ms)
-        )
-        self._computer_use_check.setChecked(self._settings.computer_use_enabled)
-        self._yolo_check.setChecked(self._settings.yolo)
-        self._tray_check.setChecked(self._settings.minimize_to_tray)
-        self._system_prompt_edit.setPlainText(self._settings.system_prompt)
-        self._wake_word_check.setChecked(self._settings.wake_word_enabled)
-        self._wake_word_edit.setText(self._settings.wake_word)
-        self._working_dir_edit.setText(str(self._settings.working_dir))
-        if self._settings.input_device:
-            self._input_device_combo.setCurrentText(self._settings.input_device)
-        if self._settings.output_device:
-            self._output_device_combo.setCurrentText(self._settings.output_device)
+        # Ctrl+, opens the settings dialog.
+        self._settings_shortcut = QShortcut(QKeySequence("Ctrl+,"), self)
+        self._settings_shortcut.activated.connect(self._open_settings)
 
     # -- Settings handling --
 
-    def _watch_settings_changes(self) -> None:
-        for combo in self._settings_widget.findChildren(QComboBox):
-            combo.currentTextChanged.connect(self._mark_settings_dirty)
-        for check in self._settings_widget.findChildren(QCheckBox):
-            check.toggled.connect(self._mark_settings_dirty)
-        for edit in self._settings_widget.findChildren(QLineEdit):
-            edit.textChanged.connect(self._mark_settings_dirty)
-        self._fps_spin.valueChanged.connect(self._mark_settings_dirty)
-        self._system_prompt_edit.textChanged.connect(self._mark_settings_dirty)
-        self._mode_combo.currentTextChanged.connect(self._refresh_mic_state)
-        self._refresh_settings_state()
+    def _tier_label(self) -> str:
+        """Best-effort tier the session starts on, from the routing settings."""
+        if self._settings.privacy_mode == "strict" or not self._settings.prefer_free_tier:
+            return "Tier 1"
+        return "Free"
 
-    def _mark_settings_dirty(self, *_args: Any) -> None:
-        self._settings_dirty = True
-        self._refresh_settings_state()
-
-    def _refresh_settings_state(self) -> None:
-        state = "Unsaved changes" if self._settings_dirty else "Saved settings"
-        self._settings_state_label.setText(f"{state} · applies on next connect")
-        self._settings_state_label.setToolTip(
-            "Save settings to keep them for later. Connect also saves and applies settings. "
-            "An active session keeps the settings it connected with."
-        )
-
-    def _build_settings(self) -> AppSettings:
-        """Construct a validated AppSettings from the current UI values.
-
-        Preserves loaded hidden settings.
-        """
-        working_dir = Path(self._working_dir_edit.text().strip() or ".")
-        model_index = self._model_combo.currentIndex()
-        model_text = self._model_combo.currentText().strip()
-        idx_by_text = self._model_combo.findText(model_text)
-        if idx_by_text >= 0 and self._model_combo.itemData(idx_by_text):
-            model = self._model_combo.itemData(idx_by_text)
-        elif (
-            model_index >= 0
-            and model_text == self._model_combo.itemText(model_index)
-            and self._model_combo.itemData(model_index)
-        ):
-            model = self._model_combo.itemData(model_index)
-        else:
-            model = canonicalize_model_name(model_text)
-        updates: dict[str, Any] = {
-            "model": model,
-            "voice": self._voice_combo.currentText(),
-            "mode": self._mode_combo.currentText().lower(),
-            "working_dir": working_dir,
-            "workspace_root": working_dir,
-            "share_screen": self._share_screen_check.isChecked(),
-            "screen_fps": self._fps_spin.value(),
-            "screen_deduplicate": self._screen_deduplicate_check.isChecked(),
-            "audio_chunk_duration_ms": self._audio_chunk_combo.currentData(),
-            "computer_use_enabled": self._computer_use_check.isChecked(),
-            "input_device": self._input_device_combo.currentData(),
-            "output_device": self._output_device_combo.currentData(),
-            "yolo": self._yolo_check.isChecked(),
-            "minimize_to_tray": self._tray_check.isChecked(),
-            "system_prompt": self._system_prompt_edit.toPlainText().strip(),
-            "wake_word_enabled": self._wake_word_check.isChecked(),
-            "wake_word": self._wake_word_edit.text().strip()
-            or str(AppSettings.model_fields["wake_word"].default),
-            "headless": False,
-            "debug": self._settings.debug,
-        }
-        dumped = self._settings.model_dump()
-        dumped.update(updates)
-        new_settings = AppSettings.model_validate(dumped)
-        self._settings = new_settings
-        return new_settings
+    def _refresh_strip(self) -> None:
+        model = canonicalize_model_name(self._settings.model)
+        labels = {value: label for label, value in MODEL_OPTIONS}
+        self._strip.set_model(labels.get(model, model))
+        self._strip.set_tier(self._tier)
+        self._strip.set_privacy(self._settings.privacy_mode)
+        self._strip.set_yolo(self._settings.yolo)
+        self._strip.set_screen(self._sharing_active, self._settings.screen_monitor)
 
     @Slot()
-    def _on_save_settings(self) -> None:
+    def _open_settings(self) -> SettingsDialog:
+        """Open the (modal) settings dialog; returns it so callers can inspect it."""
+        dialog = SettingsDialog(self._settings, self)
+        dialog.settings_saved.connect(self._on_settings_saved)
+        self._settings_dialog = dialog
+        dialog.open()
+        return dialog
+
+    @Slot(object)
+    def _on_settings_saved(self, new_settings: AppSettings) -> None:
+        old_values = self._settings.model_dump()
         try:
-            self._build_settings().save()
-            self._settings_dirty = False
-            self._refresh_settings_state()
+            new_settings.save()
         except Exception as exc:
             QMessageBox.warning(self, "Settings error", str(exc))
+            return
+        changed = {k for k, v in new_settings.model_dump().items() if old_values.get(k) != v}
+        self._settings = new_settings
+        if self._bridge is not None:
+            self._apply_live_settings(changed)
+            # workspace_root follows working_dir; headless is forced off by the dialog.
+            reconnect = len(changed - LIVE_FIELDS - {"workspace_root", "headless"})
+            if reconnect:
+                self.statusBar().showMessage(f"{reconnect} changes apply on reconnect", 6000)
+        if self._bridge is None:
+            self._tier = self._tier_label()
+        self._refresh_strip()
+        self._refresh_mic_state()
+
+    def _apply_live_settings(self, changed: set[str]) -> None:
+        """Push the settings that have a live command into the running session."""
+        if self._bridge is None:
+            return
+        settings = self._settings
+        if "yolo" in changed:
+            mode = GatingMode.YOLO if settings.yolo else GatingMode.GUARDED
+            self._bridge.send_command(SetGatingMode(mode=mode))
+        if changed & {"share_screen", "screen_monitor"}:
+            # Computer control needs the screen feed; never disable it here.
+            self._sharing_active = settings.share_screen or settings.computer_use_enabled
+            self._bridge.send_command(
+                SetShareScreen(enabled=self._sharing_active, monitor=settings.screen_monitor)
+            )
+            self._update_share_banner()
+        # minimize_to_tray is GUI-local; closeEvent reads it from self._settings.
 
     @Slot()
-    def _on_browse_working_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(
-            self,
-            "Select working directory",
-            self._working_dir_edit.text() or str(Path.cwd()),
-        )
-        if path:
-            self._working_dir_edit.setText(path)
-
-    @Slot(bool)
-    def _toggle_settings_panel(self, expanded: bool) -> None:
-        self._settings_widget.setVisible(expanded)
-        self._settings_scroll.setVisible(expanded)
-        self._settings_toggle_btn.setText(
-            "Hide settings" if expanded else "Show settings"
-        )
+    def _show_diagnostics(self) -> None:
+        self._diagnostics_page.show()
+        self._diagnostics_page.raise_()
+        self._diagnostics_page.activateWindow()
 
     @Slot()
     def _copy_transcript(self) -> None:
-        text = self._transcript.toPlainText()
+        text = self._chat.plain_text()
         if text:
             QApplication.clipboard().setText(text)
             self._add_activity("Transcript copied to clipboard")
 
     @Slot()
     def _clear_transcript(self) -> None:
-        self._transcript.clear()
+        self._chat.clear()
+        self._tool_rows.clear()
         self._last_source = None
 
     # -- System tray --
@@ -771,13 +440,17 @@ class MainWindow(QMainWindow):
         self._mic_chip.setStyleSheet(_MIC_CHIP_STYLES[state])
         self._add_activity(_MIC_CHIP_TEXT[state])
 
+    def _session_mode(self) -> str:
+        """Mode the live session connected with (settings edits apply on reconnect)."""
+        return (self._connected_mode or self._settings.mode).lower()
+
     def _refresh_mic_state(self) -> None:
         """Recompute the mic chip from connection state, mode, and mute flag."""
         connected = self._bridge is not None and self._status_label.text() in (
             ConnectionState.LIVE.value,
             ConnectionState.DRAINING.value,
         )
-        wants_mic = self._mode_combo.currentText().lower() != "text"
+        wants_mic = self._session_mode() != "text"
         if not connected or not wants_mic:
             self._set_mic_state(_MicState.OFF)
         elif self._mic_muted:
@@ -789,7 +462,7 @@ class MainWindow(QMainWindow):
     def _refresh_meter_timer(self) -> None:
         active = (
             self.isVisible() and not self.isMinimized() and self._bridge is not None
-            and self._mode_combo.currentText().lower() != "text"
+            and self._session_mode() != "text"
             and self._status_label.text() in (
                 ConnectionState.LIVE.value, ConnectionState.DRAINING.value
             )
@@ -814,12 +487,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_meter_timer"):
             self._refresh_meter_timer()
 
-    def resizeEvent(self, event: Any) -> None:
-        super().resizeEvent(event)
-        self._settings_scroll.setMaximumHeight(min(240, max(64, self.height() - 400)))
-
     def _update_share_banner(self) -> None:
         self._share_banner.setVisible(self._sharing_active)
+        self._strip.set_screen(self._sharing_active, self._settings.screen_monitor)
 
     # -- Bridge lifecycle --
 
@@ -829,11 +499,9 @@ class MainWindow(QMainWindow):
             self._bridge.stop()
             return
 
+        settings = self._settings
         try:
-            settings = self._build_settings()
             settings.save()
-            self._settings_dirty = False
-            self._refresh_settings_state()
         except Exception as exc:
             QMessageBox.warning(self, "Settings error", str(exc))
             return
@@ -845,7 +513,10 @@ class MainWindow(QMainWindow):
         self._diagnostics_label.setText("Local diagnostics: no samples")
 
         self._connect_btn.setText("Disconnect")
-        self._settings_widget.setEnabled(False)
+        self._strip.set_connected_controls(True)
+        self._connected_mode = settings.mode
+        self._tier = self._tier_label()
+        self._refresh_strip()
 
         self._sharing_active = settings.share_screen or settings.computer_use_enabled
         self._update_share_banner()
@@ -863,6 +534,11 @@ class MainWindow(QMainWindow):
             )
         )
 
+    @Slot()
+    def _on_disconnect_requested(self) -> None:
+        if self._bridge is not None:
+            self._on_connect_clicked()
+
     @Slot(str)
     def _on_bridge_finished(self, reason: str) -> None:
         """Clean up when the Supervisor loop exits."""
@@ -872,14 +548,17 @@ class MainWindow(QMainWindow):
             self._bridge = None
         self._status_label.setText(f"Disconnected ({reason})")
         self._connect_btn.setText("Connect")
-        self._settings_widget.setEnabled(True)
+        self._strip.set_connection(ConnectionState.DISCONNECTED, reason)
+        self._strip.set_connected_controls(False)
+        self._chat.set_speaking(False)
+        self._connected_mode = None
         self._mic_meter.setValue(0)
         self._speaker_meter.setValue(0)
         self._sharing_active = False
         self._update_share_banner()
         self._refresh_mic_state()
         self._add_activity(f"Disconnected ({reason})")
-        self._resolve_pending_approvals("Session disconnected", session_finished=True)
+        self._approvals.resolve_all("Session disconnected", session_finished=True)
 
     # -- Event handling --
 
@@ -887,6 +566,7 @@ class MainWindow(QMainWindow):
     def _on_event(self, event: AgentEvent) -> None:
         if isinstance(event, ConnectionStateChanged):
             self._status_label.setText(event.state.value)
+            self._strip.set_connection(event.state, event.detail)
             self._add_activity(
                 f"Connection: {event.state.value}"
                 + (f" — {event.detail}" if event.detail else "")
@@ -895,37 +575,52 @@ class MainWindow(QMainWindow):
                 self._status_label.setToolTip(event.detail)
             if event.state == ConnectionState.DISCONNECTED:
                 self._connect_btn.setText("Connect")
-                self._settings_widget.setEnabled(True)
+                self._chat.set_speaking(False)
             elif event.state == ConnectionState.LIVE:
                 self._connect_btn.setText("Disconnect")
-                self._settings_widget.setEnabled(False)
+            self._strip.set_connected_controls(self._bridge is not None)
             self._refresh_mic_state()
             if event.state == ConnectionState.DISCONNECTED:
-                self._resolve_pending_approvals("Session disconnected")
+                self._approvals.resolve_all("Session disconnected")
         elif isinstance(event, PartialTranscript):
-            self._append_partial(event.text, event.source)
+            self._chat.append_partial(event.text, event.source, event.turn_id)
+            self._last_source = event.source
+            if event.source == TranscriptSource.MODEL:
+                self._chat.set_speaking(True)
         elif isinstance(event, TextNotSent):
-            self._append_system(f"[NOT SENT] {event.text}\nReason: {event.reason}")
+            self._chat.add_system(f"[NOT SENT] {event.text}\nReason: {event.reason}")
             if not self._input_edit.text():
                 self._input_edit.setText(event.text)
         elif isinstance(event, TurnComplete):
-            self._append_system(f"[TURN COMPLETE] {event.source.value}")
+            self._chat.complete_turn(
+                event.source, event.text, event.turn_id, interrupted=event.interrupted
+            )
+            if event.source == TranscriptSource.MODEL:
+                self._chat.set_speaking(False)
             self._last_source = None
         elif isinstance(event, ToolCallReceived):
+            self._add_tool_row(event.call_id, event.name, event.args)
             self._add_activity(f"Tool call: {event.name}")
         elif isinstance(event, ToolApprovalRequested):
-            self._add_tool_card(event)
+            self._add_tool_row(event.call_id, event.name, event.args)
+            self._approvals.add_request(event)
             self._add_activity(f"Approval requested: {event.name}")
         elif isinstance(event, ToolResultSent):
-            self._update_tool_card(event)
+            self._approvals.set_result(event)
+            summary = event.result.strip().splitlines()[0] if event.result.strip() else ""
+            self._chat.update_tool_row(
+                event.call_id, ok=event.ok, summary=summary[:_TOOL_SUMMARY_CHARS]
+            )
             self._add_activity(
                 f"Tool result: {event.name} -> {'OK' if event.ok else 'FAILED'}"
             )
         elif isinstance(event, ToolCallCancelled):
-            self._update_tool_card_cancelled(event)
+            self._approvals.mark_cancelled(event)
+            for call_id in event.call_ids:
+                self._chat.update_tool_row(call_id, ok=False, summary="cancelled")
             self._add_activity(f"Tool cancelled: {event.reason}")
         elif isinstance(event, ContextReset):
-            self._append_system(f"[RESET] {event.reason}")
+            self._chat.add_system(f"[RESET] {event.reason}")
             self._add_activity(f"Context reset: {event.reason}")
         elif isinstance(event, SessionExpiring):
             notice = (
@@ -933,43 +628,47 @@ class MainWindow(QMainWindow):
                 if event.seconds is not None
                 else "Session expiring; reconnecting..."
             )
-            self._append_system(f"[EXPIRING] {notice}")
+            self._chat.add_system(f"[EXPIRING] {notice}")
             self._add_activity(notice)
         elif isinstance(event, SessionError):
             self._add_activity(f"Error: {event.message}")
             if event.fatal:
                 QMessageBox.critical(self, "Session error", event.message)
             else:
-                self._append_system(f"[ERROR] {event.message}")
+                self._chat.add_system(f"[ERROR] {event.message}")
         elif isinstance(event, UsageUpdate):
             self._update_usage(event)
+            self._strip.update_usage(event)
+            self._diagnostics_page.update_usage(event)
         elif isinstance(event, DiagnosticsUpdate):
             self._update_diagnostics(event)
+            self._strip.update_diagnostics(event)
+            self._diagnostics_page.update_diagnostics(event)
+        elif isinstance(event, RateLimitHit):
+            self._tier = _TIER_NAMES.get(event.tier.lower(), event.tier)
+            self._strip.set_tier(self._tier)
+            self._add_activity(f"Rate limit: {event.model} ({self._tier})")
         elif isinstance(event, AudioLevel):
             # Levels are polled via _update_meters; ignore pushed events.
             pass
+        else:
+            # Not part of the AgentEvent union today; the session may forward it.
+            self._note_disconnect(event)
 
-    def _append_partial(self, text: str, source: TranscriptSource) -> None:
-        if self._last_source != source:
-            self._insert_at_end("\n")
-            prefix = "[USER] " if source == TranscriptSource.USER else "[MODEL] "
-            self._insert_at_end(prefix)
-            self._last_source = source
-        self._insert_at_end(text)
-        self._transcript.ensureCursorVisible()
+    def _note_disconnect(self, event: object) -> None:
+        if isinstance(event, DisconnectReason):
+            self._diagnostics_page.note_reconnect(event.code, event.detail)
 
-    def _append_system(self, text: str) -> None:
-        self._insert_at_end(f"\n{text}\n")
-        self._transcript.ensureCursorVisible()
-        self._last_source = None
-
-    def _insert_at_end(self, text: str) -> None:
-        cursor = self._transcript.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        self._transcript.setTextCursor(cursor)
-        self._transcript.insertPlainText(text)
-
-    # -- Tool cards --
+    def _add_tool_row(self, call_id: str, name: str, args: dict[str, Any]) -> None:
+        # ToolCallReceived and ToolApprovalRequested both announce a call.
+        if call_id in self._tool_rows:
+            return
+        self._tool_rows.add(call_id)
+        target = args.get("path") or args.get("command")
+        if target is None and args:
+            target = next(iter(args.values()))
+        detail = " ".join(str(target).split())[:_TOOL_ARG_CHARS] if target is not None else ""
+        self._chat.add_tool_row(call_id, name, detail)
 
     def _update_diagnostics(self, event: DiagnosticsUpdate) -> None:
         details = ["Local application measurements; not provider model or hardware latency."]
@@ -986,77 +685,23 @@ class MainWindow(QMainWindow):
         )
         self._diagnostics_label.setToolTip("\n".join(details))
 
-    def _refresh_pending_count(self) -> None:
-        count = sum(card.pending for card in self._tool_cards.values())
-        self._approval_count_label.setText(f"{count} pending approvals")
-        self._approval_count_label.setVisible(bool(self._tool_cards))
+    # -- Tool approvals --
 
-    def _resolve_pending_approvals(self, message: str, *, session_finished: bool = False) -> None:
-        for card in self._tool_cards.values():
-            # Approved tool tasks survive socket reconnects. Only the supervisor's
-            # final exit makes an in-flight tool impossible to cancel.
-            if card.pending or (session_finished and card._cancel_btn.isEnabled()):
-                card.set_result(message)
-        self._refresh_pending_count()
-
-    def _add_tool_card(self, event: ToolApprovalRequested) -> None:
-        self._tool_scroll.setVisible(True)
-        card = _ToolCard(event)
-        card._approve_btn.clicked.connect(
-            lambda _checked=False, call_id=event.call_id: self._approve_tool(call_id)
-        )
-        card._deny_btn.clicked.connect(
-            lambda _checked=False, call_id=event.call_id: self._deny_tool(call_id)
-        )
-        card._cancel_btn.clicked.connect(
-            lambda _checked=False, call_id=event.call_id: self._cancel_tool(call_id)
-        )
-        self._tool_cards[event.call_id] = card
-        self._tool_layout.insertWidget(0, card)
-        self._refresh_pending_count()
-        if self.height() < 680:
-            self._settings_toggle_btn.setChecked(False)
-
-    @Slot()
+    @Slot(str)
     def _approve_tool(self, call_id: str) -> None:
         if self._bridge is not None:
             self._bridge.send_command(ApproveTool(call_id=call_id))
-            self._tool_cards[call_id].set_approved()
-            self._refresh_pending_count()
+            self._approvals.mark_approved(call_id)
 
-    @Slot()
+    @Slot(str)
     def _deny_tool(self, call_id: str) -> None:
         if self._bridge is not None:
             self._bridge.send_command(DenyTool(call_id=call_id))
-            self._tool_cards[call_id].set_result("Denied · waiting for result")
-            self._refresh_pending_count()
 
-    @Slot()
+    @Slot(str)
     def _cancel_tool(self, call_id: str) -> None:
         if self._bridge is not None:
             self._bridge.send_command(CancelTool(call_ids=[call_id]))
-            self._tool_cards[call_id].set_result("Cancellation requested")
-            self._refresh_pending_count()
-
-    def _update_tool_card(self, event: ToolResultSent) -> None:
-        card = self._tool_cards.get(event.call_id)
-        if card is None:
-            return
-        marker = "OK" if event.ok else "FAILED"
-        message = f"{marker}: {event.result}"
-        if event.orphaned:
-            message += " (orphaned)"
-        card.set_result(message)
-        self._refresh_pending_count()
-        self._append_system(f"[TOOL] {event.name} -> {message}")
-
-    def _update_tool_card_cancelled(self, event: ToolCallCancelled) -> None:
-        for call_id in event.call_ids:
-            card = self._tool_cards.get(call_id)
-            if card is None:
-                continue
-            card.set_result(f"Cancelled: {event.reason}")
-        self._refresh_pending_count()
 
     # -- Input and meters --
 
@@ -1066,6 +711,7 @@ class MainWindow(QMainWindow):
         if not text or self._bridge is None:
             return
         self._bridge.send_command(SendText(text=text))
+        self._chat.add_user_text(text)
         self._input_edit.clear()
 
     @Slot(bool)
@@ -1092,7 +738,7 @@ class MainWindow(QMainWindow):
         # Minimize to the tray instead of quitting when the setting is on.
         if (
             not self._force_quit
-            and self._tray_check.isChecked()
+            and self._settings.minimize_to_tray
             and self._tray is not None
             and self._tray.isVisible()
         ):

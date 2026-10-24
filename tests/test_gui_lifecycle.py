@@ -89,7 +89,7 @@ def test_main_window_connect_and_disconnect(
     )
 
     qtbot.waitUntil(
-        lambda: "Hello GUI" in window._transcript.toPlainText(),
+        lambda: "Hello GUI" in window._chat.plain_text(),
         timeout=5000,
     )
 
@@ -129,12 +129,12 @@ def test_main_window_tool_approval_card(
         timeout=5000,
     )
 
-    qtbot.waitUntil(lambda: "fc-1" in window._tool_cards, timeout=5000)
-    card = window._tool_cards["fc-1"]
-    card._approve_btn.click()
+    qtbot.waitUntil(lambda: window._approvals.has("fc-1"), timeout=5000)
+    card = window._approvals._cards["fc-1"]
+    card.approve_btn.click()
 
     qtbot.waitUntil(
-        lambda: "OK" in card._status.text() or "FAILED" in card._status.text(),
+        lambda: "OK" in card.status_label.text() or "FAILED" in card.status_label.text(),
         timeout=5000,
     )
 
@@ -174,14 +174,14 @@ def test_main_window_reconnects_on_go_away(
     )
 
     qtbot.waitUntil(
-        lambda: "First epoch" in window._transcript.toPlainText(),
+        lambda: "First epoch" in window._chat.plain_text(),
         timeout=5000,
     )
 
     # The server initiates a GoAway; the Supervisor should reconnect and the
     # second epoch should deliver the resumed text.
     qtbot.waitUntil(
-        lambda: "Resumed" in window._transcript.toPlainText(),
+        lambda: "Resumed" in window._chat.plain_text(),
         timeout=5000,
     )
 
@@ -245,7 +245,7 @@ def test_yolo_write_file_executes_without_approval(
         lambda: (workspace / "yolo-note.txt").exists(),
         timeout=5000,
     )
-    assert window._tool_cards == {}
+    assert not window._approvals.has("fc-yolo")
     assert (workspace / "yolo-note.txt").read_text() == "hello"
 
     qtbot.mouseClick(window._connect_btn, Qt.MouseButton.LeftButton)

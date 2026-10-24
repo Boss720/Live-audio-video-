@@ -8,11 +8,18 @@ from typing import Any, cast
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QComboBox, QSystemTrayIcon
 
 from app.bridge import Bridge
 from app.main_window import MainWindow, _MicState
-from core.events import ConnectionState, ConnectionStateChanged, UsageUpdate
+from core.events import (
+    ConnectionState,
+    ConnectionStateChanged,
+    PartialTranscript,
+    TranscriptSource,
+    TurnComplete,
+    UsageUpdate,
+)
 from settings.settings import AppSettings
 from tests.fakes.fake_live import FakeLive, FakeLiveSession, make_fake_client_factory
 
@@ -137,8 +144,8 @@ def test_activity_feed_logs_tool_cycle(
         lambda: window._status_label.text() == ConnectionState.LIVE.value,
         timeout=5000,
     )
-    qtbot.waitUntil(lambda: "fc-9" in window._tool_cards, timeout=5000)
-    window._tool_cards["fc-9"]._approve_btn.click()
+    qtbot.waitUntil(lambda: window._approvals.has("fc-9"), timeout=5000)
+    window._approvals._cards["fc-9"].approve_btn.click()
     qtbot.waitUntil(
         lambda: "Tool result: run_command" in _activity_text(window),
         timeout=5000,
@@ -202,7 +209,7 @@ def test_mic_chip_transitions_with_mute_toggle(
         def send_command(self, command: Any) -> None:
             pass
 
-    window._mode_combo.setCurrentText("Both")
+    window._settings = window._settings.model_copy(update={"mode": "both"})
     window._on_event(ConnectionStateChanged(state=ConnectionState.LIVE))
     window._bridge = cast(Bridge, _StubBridge())
     window._refresh_mic_state()
@@ -286,7 +293,6 @@ def test_close_hides_to_tray_when_enabled(
 
     fake_tray = _FakeTray()
     window._tray = cast(QSystemTrayIcon, fake_tray)
-    window._tray_check.setChecked(True)
 
     window.show()
     qtbot.waitExposed(window)
@@ -334,18 +340,18 @@ def test_tool_card_buttons_have_mnemonics(
     qtbot.waitExposed(window)
 
     qtbot.mouseClick(window._connect_btn, Qt.MouseButton.LeftButton)
-    qtbot.waitUntil(lambda: "fc-k" in window._tool_cards, timeout=5000)
+    qtbot.waitUntil(lambda: window._approvals.has("fc-k"), timeout=5000)
 
-    card = window._tool_cards["fc-k"]
-    assert card._approve_btn.text() == "&Approve"
-    assert card._deny_btn.text() == "&Deny"
-    assert card._cancel_btn.text() == "&Cancel"
+    card = window._approvals._cards["fc-k"]
+    assert card.approve_btn.text() == "&Approve"
+    assert card.deny_btn.text() == "&Deny"
+    assert card.cancel_btn.text() == "&Cancel"
 
     # Resolve the card before disconnecting to keep the teardown simple.
-    card._deny_btn.click()
+    card.deny_btn.click()
     qtbot.waitUntil(
-        lambda: "Denied" in card._status.text() or "OK" in card._status.text()
-        or "FAILED" in card._status.text() or "Cancel" in card._status.text(),
+        lambda: "Denied" in card.status_label.text() or "OK" in card.status_label.text()
+        or "FAILED" in card.status_label.text() or "Cancel" in card.status_label.text(),
         timeout=5000,
     )
 
@@ -371,11 +377,11 @@ def test_theme_stylesheet_and_object_names(
     window = MainWindow(settings)
     qtbot.addWidget(window)
 
-    assert window._settings_widget.objectName() == "glassPanel"
     assert window._connect_btn.objectName() == "accentButton"
     assert window._status_label.objectName() == "statusChip"
     assert window._share_banner.objectName() == "shareBanner"
-    assert window._tool_container.objectName() == "toolContainer"
+    assert window._approvals.objectName() == "approvalsRail"
+    assert window._strip.objectName() == "statusStrip"
     # The central widget must stay transparent so the window gradient shows.
     assert window.centralWidget().objectName() == "centralRoot"
     window.close()
@@ -386,30 +392,30 @@ def test_model_picker_has_primary_fallback_and_accepts_custom_ids(
 ) -> None:
     window = MainWindow(settings)
     qtbot.addWidget(window)
+    dialog = window._open_settings()
+    combo = cast(QComboBox, dialog._bindings["model"].widget)
 
-    assert window._model_combo.isEditable()
-    assert window._model_combo.findData(settings.model) >= 0
-    assert window._model_combo.currentText() == "Gemini 3.1 Flash Live Preview"
+    assert combo.isEditable()
+    assert combo.findData(settings.model) >= 0
+    assert combo.currentText() == "Gemini 3.1 Flash Live Preview"
+    fallback = cast(QComboBox, dialog._bindings["fallback_model"].widget)
     assert settings.fallback_model is not None
-    assert window._model_combo.findData(settings.fallback_model) >= 0
-    assert window._model_combo.findData("gemini-3.8-live") >= 0
-    assert (
-        window._model_combo.findData("gemini-3.8-live-extended-thinking") >= 0
-    )
+    assert fallback.findData(settings.fallback_model) >= 0
+    assert combo.findData("gemini-3.8-live") >= 0
+    assert combo.findData("gemini-3.8-live-extended-thinking") >= 0
 
     extended_model = "gemini-3.8-live-extended-thinking"
-    window._model_combo.setCurrentIndex(
-        window._model_combo.findData(extended_model)
-    )
-    assert window._build_settings().model == extended_model
+    combo.setCurrentIndex(combo.findData(extended_model))
+    assert dialog.build_settings().model == extended_model
 
     custom_model = "models/custom-live-model"
-    window._model_combo.setCurrentText(custom_model)
-    assert window._build_settings().model == custom_model
+    combo.setCurrentText(custom_model)
+    assert dialog.build_settings().model == custom_model
+    dialog.close()
     window.close()
 
 
-def test_settings_can_collapse_and_transcript_can_copy_and_clear(
+def test_transcript_can_copy_and_clear(
     qtbot: Any, settings: AppSettings, patched_dirs: None
 ) -> None:
     window = MainWindow(settings)
@@ -417,15 +423,16 @@ def test_settings_can_collapse_and_transcript_can_copy_and_clear(
     window.show()
     qtbot.waitExposed(window)
 
-    window._settings_toggle_btn.setChecked(False)
-    assert not window._settings_widget.isVisible()
-    assert window._settings_toggle_btn.text() == "Show settings"
-
-    window._transcript.setPlainText("[USER] hello\n[MODEL] hi")
+    window._on_event(PartialTranscript("hello", TranscriptSource.USER, 1))
+    window._on_event(TurnComplete(TranscriptSource.USER, "hello", 1))
+    window._on_event(PartialTranscript("hi", TranscriptSource.MODEL, 2))
+    window._on_event(TurnComplete(TranscriptSource.MODEL, "hi", 2))
     window._copy_transcript_btn.click()
-    assert "[MODEL] hi" in QApplication.clipboard().text()
+    assert window._chat.plain_text() == QApplication.clipboard().text()
+    assert "Model: hi" in QApplication.clipboard().text()
+    assert "You: hello" in QApplication.clipboard().text()
 
     window._clear_transcript_btn.click()
-    assert window._transcript.toPlainText() == ""
+    assert window._chat.plain_text() == ""
     assert window._last_source is None
     window.close()

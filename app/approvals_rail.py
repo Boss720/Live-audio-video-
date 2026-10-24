@@ -147,11 +147,12 @@ class _Card(QFrame):
             label.setWordWrap(True)
 
         buttons = QHBoxLayout()
-        self.approve_btn = QPushButton("Approve")
+        # Mnemonics keep the full approve/deny cycle keyboard-only.
+        self.approve_btn = QPushButton("&Approve")
         self.approve_btn.setAccessibleName(f"Approve {event.name}")
-        self.deny_btn = QPushButton("Deny")
+        self.deny_btn = QPushButton("&Deny")
         self.deny_btn.setAccessibleName(f"Deny {event.name}")
-        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn = QPushButton("&Cancel")
         self.cancel_btn.setAccessibleName(f"Cancel {event.name}")
         self.cancel_btn.setVisible(False)
         self.cancel_btn.setEnabled(False)

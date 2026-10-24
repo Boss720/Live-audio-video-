@@ -373,10 +373,12 @@ def test_computer_use_round_trips_through_settings_file(
 def test_gui_checkbox_round_trips(qtbot: Any, tmp_path: Path) -> None:
     window = MainWindow(_make_settings(tmp_path, computer_use_enabled=True))
     qtbot.addWidget(window)
-    assert window._computer_use_check.isChecked() is True
+    dialog = window._open_settings()
+    assert dialog._bindings["computer_use_enabled"].get() is True
 
-    window._computer_use_check.setChecked(False)
-    assert window._build_settings().computer_use_enabled is False
+    dialog._bindings["computer_use_enabled"].set(False)
+    assert dialog.build_settings().computer_use_enabled is False
+    dialog.close()
 
 
 # -- Dispatcher round-trip --
