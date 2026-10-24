@@ -27,7 +27,7 @@ from settings import (
     set_api_key,
 )
 
-DEFAULT_MODEL = "gemini-3.1-flash-live-preview"
+DEFAULT_MODEL = "gemini-3.8-live"
 DEFAULT_VOICE = "Puck"
 
 

@@ -395,7 +395,7 @@ class MainWindow(QMainWindow):
         row += 1
         self._wake_word_check = QCheckBox("Wake-word gating (voice)")
         self._wake_word_edit = QLineEdit()
-        self._wake_word_edit.setPlaceholderText("e.g. Bongo")
+        self._wake_word_edit.setPlaceholderText("e.g. Leroy")
         self._wake_word_edit.setAccessibleName("Wake word")
         self._wake_word_edit.setMaximumWidth(180)
         wake_layout = QHBoxLayout()
@@ -649,7 +649,8 @@ class MainWindow(QMainWindow):
             "minimize_to_tray": self._tray_check.isChecked(),
             "system_prompt": self._system_prompt_edit.toPlainText().strip(),
             "wake_word_enabled": self._wake_word_check.isChecked(),
-            "wake_word": self._wake_word_edit.text().strip() or "Bongo",
+            "wake_word": self._wake_word_edit.text().strip()
+            or str(AppSettings.model_fields["wake_word"].default),
             "headless": False,
             "debug": self._settings.debug,
         }

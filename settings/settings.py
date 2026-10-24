@@ -270,7 +270,7 @@ class AppSettings(BaseSettings):
     # instead of destroying them; see ``load``.
     _unknown_file_keys: dict[str, Any] = PrivateAttr(default_factory=dict)
 
-    model: str = "gemini-3.1-flash-live-preview"
+    model: str = "gemini-3.8-live"
     # Verified against the Live API (bidiGenerateContent): the bare id
     # "gemini-2.5-flash-native-audio" is rejected; the dated preview id works.
     fallback_model: str | None = "gemini-2.5-flash-native-audio-preview-12-2025"
@@ -312,13 +312,13 @@ class AppSettings(BaseSettings):
     vad_silence_duration_ms: int = 500
     # Skips the confirmation prompt for destructive tools (write_file,
     # delete_file, run_command); path and secret policy still applies.
-    yolo: bool = True
+    yolo: bool = False
     headless: bool = True
     debug: bool = False
     minimize_to_tray: bool = True
     # Mouse/keyboard control tools. Implies screen sharing: the model cannot
     # aim clicks at a screen it cannot see.
-    computer_use_enabled: bool = True
+    computer_use_enabled: bool = False
     # Extra instructions appended to the built-in system prompt. Empty = default.
     system_prompt: str = ""
     # Wake-word gating: voice input is ignored unless it contains the wake word.
@@ -443,6 +443,16 @@ class AppSettings(BaseSettings):
             msg = f"Invalid thinking_level '{value}'. Choose one of: {', '.join(_THINKING_LEVELS)}"
             raise ValueError(msg)
         return value
+
+    @model_validator(mode="after")
+    def _clamp_thinking_for_extended_model(self) -> AppSettings:
+        # The extended-thinking model accepts only low/medium/high.
+        if (
+            self.thinking_level == "minimal"
+            and self.model == "gemini-3.8-live-extended-thinking"
+        ):
+            self.thinking_level = "low"
+        return self
 
     @model_validator(mode="after")
     def _validate_wake_word_enabled(self) -> AppSettings:
