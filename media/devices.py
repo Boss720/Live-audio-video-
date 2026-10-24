@@ -9,6 +9,10 @@ import sounddevice as sd
 
 _LOOPBACK_INPUT_RE = re.compile(r"CABLE Output|Stereo Mix|What U Hear", re.IGNORECASE)
 _LOOPBACK_OUTPUT_RE = re.compile(r"CABLE Input", re.IGNORECASE)
+_HEADSET_RE = re.compile(
+    r"headset|headphone|earphone|earbud|airpods|buds|hands-free|handsfree",
+    re.IGNORECASE,
+)
 
 
 def list_input_devices() -> list[dict[str, Any]]:
@@ -75,3 +79,26 @@ def detect_loopback() -> bool:
     return bool(
         _LOOPBACK_INPUT_RE.search(input_name) and _LOOPBACK_OUTPUT_RE.search(output_name)
     )
+
+
+def is_headset_output(name: str | None = None) -> bool:
+    """Return True if the output device looks like a headset/headphones.
+
+    ``name`` is a sounddevice device name; ``None`` or empty queries the
+    default output device. Query failures count as "not a headset".
+    """
+    if not name:
+        try:
+            name = str(sd.query_devices(kind="output").get("name", ""))
+        except Exception:
+            return False
+    return bool(_HEADSET_RE.search(name))
+
+
+def should_gate_echo(policy: str, output_device: str | None = None) -> bool:
+    """Resolve the ``echo_gate`` setting: ``auto`` gates unless a headset."""
+    if policy == "on":
+        return True
+    if policy == "off":
+        return False
+    return not is_headset_output(output_device)

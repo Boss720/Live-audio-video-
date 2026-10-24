@@ -8,7 +8,7 @@ import math
 import threading
 import time
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import sounddevice as sd
@@ -37,7 +37,11 @@ class Microphone:
     """
 
     def __init__(
-        self, device: str | int | None = None, *, chunk_duration_ms: int = CHUNK_DURATION_MS
+        self,
+        device: str | int | None = None,
+        *,
+        chunk_duration_ms: int = CHUNK_DURATION_MS,
+        echo_gate: Callable[[], bool] | None = None,
     ) -> None:
         if chunk_duration_ms not in (20, 40, 100):
             raise ValueError("chunk_duration_ms must be 20, 40, or 100")
@@ -61,6 +65,13 @@ class Microphone:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._running = False
         self._gate_open = True
+        # Echo gate: returns True while mic audio must be suppressed (speaker
+        # is playing). Suppressed chunks are sent as silence, not dropped, so
+        # the stream stays continuous for server VAD. Tradeoff: with the gate
+        # active the user cannot barge in by voice on speakers; headsets
+        # bypass it. Real AEC would replace this.
+        self._echo_gate = echo_gate
+        self._suppressed_chunks = 0
 
         self._last_level = 0.0
         self._level_lock = threading.Lock()
@@ -168,6 +179,7 @@ class Microphone:
                 "oldest_chunk_ms": max(0.0, (now - chunks[0][0]) * 1000) if chunks else 0.0,
                 "dropped_chunks": float(self._dropped_chunks),
                 "callback_status_count": float(self._callback_status_count),
+                "echo_suppressed_chunks": float(self._suppressed_chunks),
                 "chunk_duration_ms": float(self._chunk_duration_ms),
             }
 
@@ -197,9 +209,19 @@ class Microphone:
             return
         if captured_at is None:
             captured_at = time.monotonic()
+        suppress = False
+        if self._echo_gate is not None:
+            try:
+                suppress = bool(self._echo_gate())
+            except Exception:  # pragma: no cover - never break capture
+                suppress = False
+        if suppress:
+            chunk = bytes(len(chunk))
         with self._queue_lock:
             if not self._running:
                 return
+            if suppress:
+                self._suppressed_chunks += 1
             self._level_chunk = chunk
             self._expire_chunks(captured_at)
             if self._gate_open:

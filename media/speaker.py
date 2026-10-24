@@ -6,6 +6,7 @@ import array
 import math
 import queue
 import threading
+import time
 from typing import Any
 
 import sounddevice as sd
@@ -25,6 +26,11 @@ BLOCKSIZE_FRAMES = OUTPUT_SAMPLE_RATE // 50
 # after an underrun; absorbs network jitter so speech does not stutter.
 PREBUFFER_MS = 40
 _PREBUFFER_BYTES = OUTPUT_SAMPLE_RATE * PREBUFFER_MS // 1000 * _BYTES_PER_FRAME
+# Echo gating: output counts as "playing" for this long after the last
+# non-silent block, covering the room reverb tail.
+ECHO_HANGOVER_MS = 250
+# Blocks quieter than this normalised RMS (~-60 dBFS) count as silence.
+_AUDIBLE_LEVEL = 0.001
 
 
 class Speaker:
@@ -78,6 +84,7 @@ class Speaker:
 
         self._last_level = 0.0
         self._level_lock = threading.Lock()
+        self._last_audible_at: float | None = None  # monotonic; under _level_lock
 
     # -- Public API --
 
@@ -154,12 +161,25 @@ class Speaker:
         del previous_queue
         with self._level_lock:
             self._last_level = 0.0
+            if deactivate:
+                self._last_audible_at = None
 
     @property
     def is_playing(self) -> bool:
-        """Return whether the speaker output stream is active."""
+        """Return whether audible audio was output within the hangover window.
+
+        True while non-silent PCM is being handed to PortAudio and for
+        ``ECHO_HANGOVER_MS`` afterwards (room reverb tail). Prebuffer and
+        underrun silence never count. Thread-safe; used as the mic echo gate.
+        """
         with self._lock:
-            return self._active
+            if not self._active:
+                return False
+        with self._level_lock:
+            last = self._last_audible_at
+        if last is None:
+            return False
+        return (time.monotonic() - last) * 1000 <= ECHO_HANGOVER_MS
 
     @property
     def level(self) -> float:
@@ -251,5 +271,8 @@ class Speaker:
             return
         mean_square = sum(sample * sample for sample in samples) / n
         rms = math.sqrt(mean_square)
+        level = min(rms / 32768.0, 1.0)
         with self._level_lock:
-            self._last_level = min(rms / 32768.0, 1.0)
+            self._last_level = level
+            if level >= _AUDIBLE_LEVEL:
+                self._last_audible_at = time.monotonic()

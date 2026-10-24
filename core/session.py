@@ -609,9 +609,16 @@ class LiveSession:
                 and self._audio_input_available()
                 and self._mic is None
             ):
+                mic_extra: dict[str, Any] = {}
+                speaker = self._speaker
+                if speaker is not None and devices.should_gate_echo(
+                    self._settings.echo_gate, self._settings.output_device
+                ):
+                    mic_extra["echo_gate"] = lambda: speaker.is_playing
                 self._mic = Microphone(
                     device=self._settings.input_device,
                     chunk_duration_ms=self._settings.audio_chunk_duration_ms,
+                    **mic_extra,
                 )
                 await self._mic.start()
 

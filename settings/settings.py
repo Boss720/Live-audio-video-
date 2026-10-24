@@ -7,7 +7,7 @@ import logging
 import os
 import platform
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from google.genai import types
 from platformdirs import user_config_dir
@@ -305,6 +305,9 @@ class AppSettings(BaseSettings):
     frame_min_interval_seconds: float = 0.5
     input_device: str | None = None  # explicit sounddevice input name
     output_device: str | None = None  # explicit sounddevice output name
+    # Mute (silence) the mic while the speaker plays, to stop the model hearing
+    # itself. auto = gate unless the output device looks like a headset.
+    echo_gate: Literal["auto", "on", "off"] = "auto"
     half_duplex: bool = True
     # 40 ms frames cut capture-side latency; saved user values still win.
     audio_chunk_duration_ms: int = 40
