@@ -89,14 +89,14 @@ def test_compact_settings_keep_conversation_and_composer_usable(window: MainWind
 
 def test_settings_saved_and_next_connect_state_roundtrip(window: MainWindow) -> None:
     assert "saved" in window._settings_state_label.text().lower()
-    window._audio_chunk_combo.setCurrentIndex(window._audio_chunk_combo.findData(40))
+    window._audio_chunk_combo.setCurrentIndex(window._audio_chunk_combo.findData(20))
     window._screen_deduplicate_check.setChecked(True)
     assert "unsaved" in window._settings_state_label.text().lower()
     window._on_save_settings()
     assert "saved" in window._settings_state_label.text().lower()
     assert "next connect" in window._settings_state_label.text().lower()
     loaded = AppSettings.load()
-    assert loaded.audio_chunk_duration_ms == 40
+    assert loaded.audio_chunk_duration_ms == 20
     assert loaded.screen_deduplicate is True
     window._system_prompt_edit.setPlainText("next session instruction")
     assert "unsaved" in window._settings_state_label.text().lower()

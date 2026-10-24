@@ -165,13 +165,14 @@ def test_connect_config_defaults_leave_model_input_untouched(
 
     ``only_activity`` drops input that arrived between turns — where every
     post-action frame lives — and a compression trigger truncates a task's
-    earlier steps out from under it. Both are opt-in.
+    earlier steps out from under it. The trigger is set high on purpose; only
+    ``only_activity`` is opt-in.
     """
     config = settings.as_connect_config(tools=[])
 
     compression = config.context_window_compression
     assert compression is not None
-    assert compression.trigger_tokens is None
+    assert compression.trigger_tokens == 100_000
     assert compression.sliding_window is not None
     assert compression.sliding_window.target_tokens == settings.target_tokens
 

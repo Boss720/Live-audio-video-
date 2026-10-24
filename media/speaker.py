@@ -19,6 +19,12 @@ OUTPUT_SAMPLE_RATE = 24_000  # Hz
 CHANNELS = 1
 DTYPE = "int16"
 _BYTES_PER_FRAME = CHANNELS * 2  # int16
+# Fixed callback period: 20 ms at 24 kHz (Gemini output rate).
+BLOCKSIZE_FRAMES = OUTPUT_SAMPLE_RATE // 50
+# Audio queued before playback starts at stream start, after a flush, or
+# after an underrun; absorbs network jitter so speech does not stutter.
+PREBUFFER_MS = 40
+_PREBUFFER_BYTES = OUTPUT_SAMPLE_RATE * PREBUFFER_MS // 1000 * _BYTES_PER_FRAME
 
 
 class Speaker:
@@ -66,6 +72,9 @@ class Speaker:
         self._played_bytes = 0
         self._underruns = 0
         self._callback_status_count = 0
+        # True until prebuffer bytes are queued; re-armed by flush/underrun.
+        self._prebuffering = True
+        self._prebuffer_wait_bytes = 0  # silence emitted while partly buffered
 
         self._last_level = 0.0
         self._level_lock = threading.Lock()
@@ -79,6 +88,7 @@ class Speaker:
             channels=CHANNELS,
             dtype=DTYPE,
             device=self._device_index,
+            blocksize=BLOCKSIZE_FRAMES,
             latency="low",
             callback=self._audio_callback,
         )
@@ -114,13 +124,7 @@ class Speaker:
         with self._lock:
             if not self._active:
                 return
-            generation = self._generation
-
-        self._update_level(pcm_bytes)
-        with self._lock:
-            if not self._active or generation != self._generation:
-                return
-            self._queue.put_nowait((generation, pcm_bytes))
+            self._queue.put_nowait((self._generation, pcm_bytes))
             self._queued_bytes += len(pcm_bytes)
             self._high_water_bytes = max(self._high_water_bytes, self._queued_bytes)
 
@@ -144,6 +148,8 @@ class Speaker:
             previous_queue, self._queue = self._queue, replacement
             self._pending = b""
             self._queued_bytes = 0
+            self._prebuffering = True
+            self._prebuffer_wait_bytes = 0
         # Release the old backlog outside the callback's critical section.
         del previous_queue
         with self._level_lock:
@@ -188,7 +194,18 @@ class Speaker:
         with self._lock:
             if status:
                 self._callback_status_count += 1
-            while pos < need:
+            if self._prebuffering:
+                if self._queued_bytes >= _PREBUFFER_BYTES:
+                    self._prebuffering = False
+                elif self._queued_bytes > 0:
+                    # Never strand a short tail: play it once it has waited
+                    # a further prebuffer period without more audio arriving.
+                    self._prebuffer_wait_bytes += need
+                    if self._prebuffer_wait_bytes >= _PREBUFFER_BYTES:
+                        self._prebuffering = False
+                else:
+                    self._prebuffer_wait_bytes = 0
+            while pos < need and not self._prebuffering:
                 if not self._pending:
                     try:
                         generation, chunk = self._queue.get_nowait()
@@ -208,9 +225,19 @@ class Speaker:
                 pos += take
             if pos < need:
                 self._underruns += 1
+                if not self._prebuffering:
+                    # Ran dry mid-stream: rebuffer before resuming.
+                    self._prebuffering = True
+                    self._prebuffer_wait_bytes = 0
 
         if pos < need:
             outdata[pos:need] = b"\x00" * (need - pos)
+        # Level from the bytes actually handed to PortAudio, outside the lock.
+        if pos:
+            self._update_level(bytes(outdata[:pos]))
+        else:
+            with self._level_lock:
+                self._last_level = 0.0
 
     def _update_level(self, chunk: bytes) -> None:
         if not chunk:

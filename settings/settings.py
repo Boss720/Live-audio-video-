@@ -306,8 +306,8 @@ class AppSettings(BaseSettings):
     input_device: str | None = None  # explicit sounddevice input name
     output_device: str | None = None  # explicit sounddevice output name
     half_duplex: bool = True
-    # Keep the established default until representative latency/quality trials.
-    audio_chunk_duration_ms: int = 100
+    # 40 ms frames cut capture-side latency; saved user values still win.
+    audio_chunk_duration_ms: int = 40
     vad_prefix_padding_ms: int = 30
     vad_silence_duration_ms: int = 500
     # Skips the confirmation prompt for destructive tools (write_file,
@@ -338,12 +338,11 @@ class AppSettings(BaseSettings):
     # target_tokens_tier1 (the model's larger effective budget there).
     target_tokens: int = 24000
     target_tokens_tier1: int = 32000
-    # Context size that triggers sliding-window compression. Unset by default:
-    # without it the window never fires and sessions were observed reaching 258k
-    # prompt tokens against a 24k target, but setting it makes compression
-    # truncate mid-task, which costs the model the earlier steps of whatever it
-    # is doing. Set it when a session's length matters more than its memory.
-    trigger_tokens: int | None = None
+    # Context size that triggers sliding-window compression. Without it the
+    # window never fires and sessions were observed reaching 258k prompt tokens
+    # against a 24k target. Compression can truncate mid-task, so set None to
+    # disable it when a session's memory matters more than its length.
+    trigger_tokens: int | None = 100_000
     # How much of the input stream each turn covers. "default" leaves the field
     # unset, which is what the API does today: audio activity plus all video.
     # "only_activity" excludes input that arrived between turns — which is when

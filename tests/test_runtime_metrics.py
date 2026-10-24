@@ -72,7 +72,7 @@ def test_timing_context_records_elapsed_without_payload() -> None:
 
 
 def test_mic_chunk_settings_preserve_default_and_reject_bad_choices() -> None:
-    assert AppSettings(_env_file=None).audio_chunk_duration_ms == 100
+    assert AppSettings(_env_file=None).audio_chunk_duration_ms == 40
     assert AppSettings(_env_file=None, audio_chunk_duration_ms=20).audio_chunk_duration_ms == 20
     with pytest.raises(ValidationError):
         AppSettings(_env_file=None, audio_chunk_duration_ms=21)

@@ -90,6 +90,7 @@ def test_callback_plays_queued_audio_and_pads_silence() -> None:
     """Queued chunks fill the callback buffer; underrun pads with zeros."""
     speaker = Speaker(stream_factory=lambda **_kw: _StubStream())
     speaker._active = True
+    speaker._prebuffering = False
 
     speaker.write(b"\x01\x00" * 40)  # 80 bytes = 40 frames
     out = _drain_callback(speaker, frames=64)
@@ -102,6 +103,7 @@ def test_callback_splits_a_large_chunk_across_periods() -> None:
     """A chunk bigger than one callback period is consumed piece by piece."""
     speaker = Speaker(stream_factory=lambda **_kw: _StubStream())
     speaker._active = True
+    speaker._prebuffering = False
 
     speaker.write(b"\x02\x00" * 100)  # 100 frames
     first = _drain_callback(speaker, frames=64)

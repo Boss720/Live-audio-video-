@@ -80,7 +80,7 @@ async def test_mic_chunk_size_and_capacity_follow_duration(
 
 
 def test_mic_default_and_invalid_durations() -> None:
-    assert Microphone().diagnostics["chunk_duration_ms"] == 100.0
+    assert Microphone().diagnostics["chunk_duration_ms"] == 40.0
     for duration in [0, 10, 30, 200]:
         with pytest.raises(ValueError, match="20, 40, or 100"):
             Microphone(chunk_duration_ms=duration)
@@ -260,9 +260,9 @@ def test_speaker_flush_resets_backlog_but_preserves_cumulative_counters() -> Non
     assert speaker.diagnostics["played_ms"] == 10.0
     assert speaker.diagnostics["high_water_ms"] == 190.0
     assert _pull(speaker, 240) == bytes(480)
-    speaker.write(b"\x04\x00" * 240)
+    speaker.write(b"\x04\x00" * 960)  # 40 ms satisfies the post-flush prebuffer
     assert _pull(speaker, 240) == b"\x04\x00" * 240
-    assert speaker.diagnostics["queued_ms"] == 0.0
+    assert speaker.diagnostics["queued_ms"] == 30.0
 
 
 def test_speaker_backlog_is_observed_without_truncating_generated_speech() -> None:
@@ -330,40 +330,25 @@ async def test_speaker_stop_restart_discards_old_pending_and_queued_audio() -> N
         assert speaker.diagnostics["queued_ms"] == 0.0
         assert speaker.diagnostics["played_ms"] == 10.0
         assert speaker.diagnostics["high_water_ms"] == 190.0
-        speaker.write(b"\x03\x00" * 240)
+        speaker.write(b"\x03\x00" * 960)  # 40 ms satisfies the start prebuffer
         assert _pull(speaker, 240) == b"\x03\x00" * 240
     finally:
         await speaker.stop()
 
 
 @pytest.mark.asyncio
-async def test_speaker_write_racing_with_stop_cannot_enqueue_for_next_start(
-    monkeypatch: Any,
-) -> None:
+async def test_speaker_write_racing_with_stop_cannot_enqueue_for_next_start() -> None:
+    # write() takes one lock for its active/generation check and enqueue, so
+    # a write can only land before stop (and be discarded) or after restart.
     speaker = Speaker(stream_factory=FakeStream)
     await speaker.start()
-    entered = threading.Event()
-    release = threading.Event()
-
-    def pause_level_update(_chunk: bytes) -> None:
-        entered.set()
-        assert release.wait(timeout=2)
-
-    monkeypatch.setattr(speaker, "_update_level", pause_level_update)
-    writer = threading.Thread(target=speaker.write, args=(b"\x05\x00" * 240,))
-    writer.start()
+    speaker.write(b"\x05\x00" * 240)
+    await speaker.stop()
+    speaker.write(b"\x05\x00" * 240)  # inactive: ignored
+    await speaker.start()
     try:
-        assert entered.wait(timeout=2)
-        await speaker.stop()
-        # Keep the old writer paused through restart, when active is true again.
-        await speaker.start()
-        release.set()
-        writer.join(timeout=2)
-        assert not writer.is_alive()
         assert _pull(speaker, 240) == bytes(480)
         assert speaker.diagnostics["queued_ms"] == 0.0
-        assert speaker.diagnostics["high_water_ms"] == 0.0
+        assert speaker.diagnostics["high_water_ms"] == 10.0
     finally:
-        release.set()
-        writer.join(timeout=2)
         await speaker.stop()

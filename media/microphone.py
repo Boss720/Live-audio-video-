@@ -21,10 +21,10 @@ logger = get_logger(__name__)
 INPUT_SAMPLE_RATE = 16_000  # Hz
 CHANNELS = 1
 DTYPE = "int16"
-CHUNK_DURATION_MS = 100
+CHUNK_DURATION_MS = 40
 INPUT_CHUNK_SAMPLES = int(INPUT_SAMPLE_RATE * CHUNK_DURATION_MS / 1000)
-QUEUE_MAXSIZE = 4
-MAX_QUEUE_MS = CHUNK_DURATION_MS * QUEUE_MAXSIZE
+# Backlog bound in milliseconds, independent of the chunk size.
+MAX_QUEUE_MS = 400
 
 
 class Microphone:
@@ -84,6 +84,7 @@ class Microphone:
             dtype=DTYPE,
             blocksize=self._chunk_samples,
             device=self._device_index,
+            latency="low",  # PortAudio's default is the high-latency profile
             callback=self._audio_callback,
         )
         self._stream.start()
