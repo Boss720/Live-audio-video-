@@ -13,8 +13,10 @@ synthesizing input.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
+import time
 from typing import TYPE_CHECKING, Any
 
 from media import screen
@@ -38,6 +40,27 @@ _DRAG_DURATION_SECONDS = 0.5
 # each computer-use action; keep a small margin instead so multi-step tasks
 # do not accumulate seconds of dead time.
 _ACTION_PAUSE_SECONDS = 0.02
+# Time for the target app to read a clipboard paste before it is restored.
+_PASTE_SETTLE_SECONDS = 0.15
+
+# Key combinations refused outright. Each is a system-level escape hatch the
+# model has no legitimate reason to press and that could lock the session,
+# open the secure-attention screen, or run arbitrary commands. Compared as
+# sets of normalized key names (subset match) so ordering, aliases and extra
+# modifiers cannot bypass them.
+_DENIED_COMBOS: tuple[frozenset[str], ...] = (
+    frozenset({"ctrl", "alt", "delete"}),  # secure attention sequence
+    frozenset({"win", "l"}),  # lock workstation
+    frozenset({"win", "r"}),  # Run dialog: arbitrary command execution
+    frozenset({"win", "x"}),  # power-user menu (shutdown, terminals)
+    frozenset({"ctrl", "shift", "esc"}),  # Task Manager
+)
+# Refused only when the agent's own window is foreground (closing/quitting us).
+_SELF_DESTRUCT_COMBOS: tuple[frozenset[str], ...] = (
+    frozenset({"alt", "f4"}),
+    frozenset({"ctrl", "w"}),
+    frozenset({"ctrl", "q"}),
+)
 
 # Monitor that normalized coordinates are mapped onto. Mirrors the
 # ``screen_monitor`` setting; the session calls ``set_monitor`` at connect.
@@ -198,6 +221,26 @@ def double_click(args: ComputerClickArgs, *, call_id: str = "") -> ToolResult:
     return _click(args, "left", 2, "Double-clicked")
 
 
+def _clipboard_snapshot(pyperclip: Any) -> str | None:
+    """Return the current clipboard text, or None if empty/non-text/unavailable."""
+    try:
+        text = pyperclip.paste()
+    except Exception:
+        return None
+    return text if isinstance(text, str) else None
+
+
+def _clipboard_restore(pyperclip: Any, previous: str | None) -> None:
+    """Put back the pre-paste clipboard text; clear it if there was none.
+
+    Never raises: a restore failure must not turn a successful paste into an
+    error. Clearing (rather than leaving the typed text) keeps pasted secrets
+    from lingering on the clipboard.
+    """
+    with contextlib.suppress(Exception):
+        pyperclip.copy(previous if previous is not None else "")
+
+
 def type_text(args: ComputerTypeArgs, *, call_id: str = "") -> ToolResult:
     """Type text into the currently focused field.
 
@@ -214,8 +257,13 @@ def type_text(args: ComputerTypeArgs, *, call_id: str = "") -> ToolResult:
             return ToolResult(True, f"Typed {len(args.text)} characters.")
         import pyperclip
 
-        pyperclip.copy(args.text)
-        gui.hotkey("ctrl", "v")
+        previous = _clipboard_snapshot(pyperclip)
+        try:
+            pyperclip.copy(args.text)
+            gui.hotkey("ctrl", "v")
+            time.sleep(_PASTE_SETTLE_SECONDS)
+        finally:
+            _clipboard_restore(pyperclip, previous)
         return ToolResult(
             True,
             f"Pasted {len(args.text)} characters via the clipboard "
@@ -231,11 +279,30 @@ def _normalize_key(part: str, gui: Any) -> str | None:
     return key if key in gui.KEYBOARD_KEYS else None
 
 
+def _combo_guard(keys: list[str]) -> ToolResult | None:
+    """Refuse dangerous system key combinations (see ``_DENIED_COMBOS``)."""
+    pressed = frozenset(keys)
+    label = "+".join(keys)
+    if any(combo <= pressed for combo in _DENIED_COMBOS):
+        return ToolResult(
+            False,
+            f"Refused: '{label}' is a blocked system key combination "
+            "(lock, Run, power menu, Task Manager or secure attention). "
+            "Use the on-screen UI instead.",
+        )
+    if any(combo <= pressed for combo in _SELF_DESTRUCT_COMBOS) and (
+        _own_window_is_foreground() is True
+    ):
+        return ToolResult(
+            False,
+            f"Refused: '{label}' would close the agent's own window. "
+            "Focus the target application first.",
+        )
+    return None
+
+
 def key_press(args: ComputerKeyArgs, *, call_id: str = "") -> ToolResult:
     """Press a key or combination like ``enter`` or ``ctrl+s``."""
-    refusal = _self_input_guard()
-    if refusal is not None:
-        return refusal
     gui = _pyautogui()
     parts = [p for p in args.keys.split("+") if p.strip()]
     keys: list[str] = []
@@ -246,6 +313,11 @@ def key_press(args: ComputerKeyArgs, *, call_id: str = "") -> ToolResult:
         keys.append(key)
     if not keys:
         return ToolResult(False, "No keys given.")
+    refusal = _combo_guard(keys)
+    if refusal is None:
+        refusal = _self_input_guard()
+    if refusal is not None:
+        return refusal
     try:
         if len(keys) == 1:
             gui.press(keys[0])

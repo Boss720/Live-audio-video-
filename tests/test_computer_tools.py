@@ -159,7 +159,8 @@ def test_type_non_ascii_pastes_via_clipboard(
     result = computer.type_text(ComputerTypeArgs(text="héllo — 日本語"))
     assert result.ok is True
     assert "clipboard" in result.message
-    assert pasted == ["héllo — 日本語"]
+    # Second copy is the clipboard restore (nothing readable before -> cleared).
+    assert pasted == ["héllo — 日本語", ""]
     assert fake_gui.calls == [("hotkey", "ctrl", "v")]
 
 

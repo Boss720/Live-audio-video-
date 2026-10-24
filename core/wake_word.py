@@ -40,26 +40,88 @@ def _levenshtein(a: str, b: str) -> int:
     return previous[-1]
 
 
-def _matches_one(normalized_text: str, normalized_wake: str) -> bool:
-    """Match a single already-normalized wake term against a transcript."""
-    if not normalized_text or not normalized_wake:
-        return False
+_SOUNDEX_CODES = {
+    **dict.fromkeys("bfpv", "1"),
+    **dict.fromkeys("cgjkqsxz", "2"),
+    **dict.fromkeys("dt", "3"),
+    "l": "4",
+    **dict.fromkeys("mn", "5"),
+    "r": "6",
+}
 
-    if normalized_wake in normalized_text:
+
+def _soundex(word: str) -> str:
+    """Tiny American Soundex: first letter plus up to three consonant digits."""
+    letters = [c for c in word.lower() if c.isalpha()]
+    if not letters:
+        return ""
+    out = [letters[0].upper()]
+    last = _SOUNDEX_CODES.get(letters[0], "")
+    for c in letters[1:]:
+        code = _SOUNDEX_CODES.get(c, "")
+        if code and code != last:
+            out.append(code)
+        if c not in "hw":  # h/w do not break a run of equal codes
+            last = code
+    return ("".join(out) + "000")[:4]
+
+
+# Longest run of adjacent transcript tokens joined into one candidate, so ASR
+# splits like "Lee Roy" or "Le Roi" can still match "Leroy".
+_MAX_JOINED_TOKENS = 3
+
+
+def _edit_tolerance(length: int) -> int:
+    """Allowed edit distance: 1 for short names, 2 only for long ones."""
+    return 1 if length < 9 else 2
+
+
+def _candidate_matches(candidate: str, wake: str) -> bool:
+    """Compare one transcript candidate (a token or joined tokens) to a wake word."""
+    if candidate == wake:
         return True
 
     # Fuzzy matching needs enough letters that one edit does not turn the word
     # into a different one. At three characters ("max" -> "map", "tax") it
     # already does, so short wake words rely on exact matching plus aliases.
-    if " " in normalized_wake or len(normalized_wake) < 4:
+    if len(wake) < 4 or len(candidate) < 4:
         return False
 
-    return any(
-        _levenshtein(token, normalized_wake) <= 1
-        for token in normalized_text.split()
-        # Skip tokens whose length differs by more than the allowed distance.
-        if abs(len(token) - len(normalized_wake)) <= 1
-    )
+    distance = _levenshtein(candidate, wake)
+    if distance <= _edit_tolerance(len(wake)):
+        return True
+
+    # Near-homophone: same Soundex key AND still close in spelling. The edit
+    # cap matters: Soundex alone equates "Leroy" with "Laura" (both L600).
+    return distance <= 2 and _soundex(candidate) == _soundex(wake)
+
+
+def _matches_one(normalized_text: str, normalized_wake: str) -> bool:
+    """Match a single already-normalized wake term against a transcript."""
+    if not normalized_text or not normalized_wake:
+        return False
+
+    tokens = normalized_text.split()
+    wake_tokens = normalized_wake.split()
+
+    # Whole-token phrase match ("hey computer"); never a substring, so "max"
+    # does not fire on "maximum".
+    width = len(wake_tokens)
+    if any(tokens[i : i + width] == wake_tokens for i in range(len(tokens) - width + 1)):
+        return True
+
+    # Single-word wake words may be split or fuzzed by ASR. Multi-word phrases
+    # stay exact apart from joining ("heycomputer").
+    joined_wake = "".join(wake_tokens)
+    for size in range(1, _MAX_JOINED_TOKENS + 1):
+        for i in range(len(tokens) - size + 1):
+            candidate = "".join(tokens[i : i + size])
+            if width > 1:
+                if candidate == joined_wake:
+                    return True
+            elif _candidate_matches(candidate, joined_wake):
+                return True
+    return False
 
 
 def contains_wake_word(
@@ -68,13 +130,15 @@ def contains_wake_word(
     """Return True if ``text`` appears to contain ``wake_word`` or an alias.
 
     Matching rules, in order:
-    1. Normalized substring — handles "hey bongo", "thanks, Bongo!", and
-       multi-word wake phrases.
-    2. Per-token fuzzy match — a single-token wake word matches any transcript
-       token within edit distance 1 (ASR near-misses like "bonggo" or "bingo").
-       Fuzzy matching is disabled for wake words shorter than 4 characters,
-       where one edit changes the word too easily.
-    3. The same two rules against each alias.
+    1. Whole-token match — handles "hey bongo", "thanks, Bongo!", and
+       multi-word wake phrases. Never a substring ("max" != "maximum").
+    2. Joined adjacent tokens (up to 3) — "Lee Roy" / "Le Roi" match "Leroy".
+    3. Fuzzy match — edit distance <= 1 (<= 2 for wake words of 9+ letters),
+       or the same Soundex key within edit distance 2 (near-homophones).
+       Disabled for wake words shorter than 4 characters, where one edit
+       changes the word too easily. A bare "roy" does not match "Leroy", and
+       "laura"/"really" are rejected despite sharing a Soundex key or letters.
+    4. The same rules against each alias.
 
     Aliases exist because short wake words are the ones ASR mangles most and
     the ones fuzzy matching can help least. "max" is heard as "Mac", "Mack",

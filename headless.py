@@ -52,22 +52,33 @@ class _TerminalState:
         self.pending_call_id: str | None = None
 
 
+_EOF: Any = object()
+
+
 def _start_stdin_thread(
     loop: asyncio.AbstractEventLoop,
-    queue: asyncio.Queue[str],
+    queue: asyncio.Queue[Any],
     stop_event: threading.Event,
 ) -> threading.Thread:
-    """Start a daemon thread that pushes stdin lines to ``queue`` thread-safely."""
+    """Start a daemon thread that pushes stdin lines to ``queue`` thread-safely.
+
+    Pushes the ``_EOF`` sentinel when stdin closes so piped input ends the
+    session instead of idling forever (mirrors bridge_stdio).
+    """
 
     def _reader() -> None:
-        while not stop_event.is_set():
-            try:
-                line = sys.stdin.readline()
-            except (OSError, ValueError):
-                break
-            if not line:
-                break
-            loop.call_soon_threadsafe(queue.put_nowait, line.rstrip("\n").rstrip("\r"))
+        try:
+            while not stop_event.is_set():
+                try:
+                    line = sys.stdin.readline()
+                except (OSError, ValueError):
+                    break
+                if not line:
+                    break
+                loop.call_soon_threadsafe(queue.put_nowait, line.rstrip("\n").rstrip("\r"))
+        finally:
+            with contextlib.suppress(RuntimeError):  # loop already closed
+                loop.call_soon_threadsafe(queue.put_nowait, _EOF)
 
     thread = threading.Thread(target=_reader, daemon=True, name="stdin-reader")
     thread.start()
@@ -136,7 +147,7 @@ async def _interactive_loop(
     settings: AppSettings,
     command_queue: asyncio.Queue[AgentCommand],
     event_queue: asyncio.Queue[AgentEvent],
-    stdin_queue: asyncio.Queue[str],
+    stdin_queue: asyncio.Queue[Any],
     session_task: asyncio.Task[Any],
 ) -> int:
     """Run the terminal event loop until the session ends."""
@@ -167,12 +178,13 @@ async def _interactive_loop(
             continue
 
         if stdin_get in done:
-            line = stdin_get.result().strip()
-            if line == "":
+            raw = stdin_get.result()
+            line = "" if raw is _EOF else raw.strip()
+            if line == "" and raw is not _EOF:
                 continue
 
             lowered = line.lower()
-            if lowered in {"exit", "quit", "/exit", "/quit"}:
+            if raw is _EOF or lowered in {"exit", "quit", "/exit", "/quit"}:
                 await command_queue.put(Disconnect())
                 with contextlib.suppress(asyncio.CancelledError):
                     await session_task
@@ -220,7 +232,7 @@ async def run_headless(settings: AppSettings) -> int:
     event_queue: asyncio.Queue[AgentEvent] = asyncio.Queue()
 
     loop = asyncio.get_running_loop()
-    stdin_queue: asyncio.Queue[str] = asyncio.Queue()
+    stdin_queue: asyncio.Queue[Any] = asyncio.Queue()
     stop_stdin = threading.Event()
     _start_stdin_thread(loop, stdin_queue, stop_stdin)
 
