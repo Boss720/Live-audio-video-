@@ -225,6 +225,7 @@ class Speaker:
                         self._prebuffering = False
                 else:
                     self._prebuffer_wait_bytes = 0
+            playing = not self._prebuffering
             while pos < need and not self._prebuffering:
                 if not self._pending:
                     try:
@@ -243,12 +244,13 @@ class Speaker:
                 self._queued_bytes = max(0, self._queued_bytes - take)
                 self._played_bytes += take
                 pos += take
-            if pos < need:
+            if pos < need and playing:
+                # Only a callback that started playing and ran dry counts;
+                # idle and prebuffer-wait callbacks are silence by design.
                 self._underruns += 1
-                if not self._prebuffering:
-                    # Ran dry mid-stream: rebuffer before resuming.
-                    self._prebuffering = True
-                    self._prebuffer_wait_bytes = 0
+                # Ran dry mid-stream: rebuffer before resuming.
+                self._prebuffering = True
+                self._prebuffer_wait_bytes = 0
 
         if pos < need:
             outdata[pos:need] = b"\x00" * (need - pos)

@@ -352,3 +352,15 @@ async def test_speaker_write_racing_with_stop_cannot_enqueue_for_next_start() ->
         assert speaker.diagnostics["high_water_ms"] == 10.0
     finally:
         await speaker.stop()
+
+
+def test_speaker_idle_callbacks_are_not_underruns() -> None:
+    speaker = Speaker(stream_factory=FakeStream)
+    speaker._active = True
+    for _ in range(50):
+        _pull(speaker, 240)
+    assert speaker.diagnostics["underruns"] == 0.0
+    speaker.write(b"\x01\x00" * 100)  # below the prebuffer: waits, still silent by design
+    for _ in range(3):
+        _pull(speaker, 240)
+    assert speaker.diagnostics["underruns"] == 0.0
