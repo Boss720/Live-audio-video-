@@ -22,8 +22,18 @@
 - M3 needs live-socket checks: late ASR after tool response clears the addressed
   continuation; 300 ms ASR wait (`WAKE_TRANSCRIPTION_WAIT_SECONDS`) may be short; server
   must accept the "ignored" FunctionResponse for NON_BLOCKING tools without a call loop.
-- NEXT: Wave 2 latency (PLAN.md). Partition: mic+speaker (media/), store+journal
-  (persist/, audit/), supervisor GoAway/ladder, session scheduling/replay/diagnostics.
+- Wave 2 latency DONE, 4 commits: `5522e64` store, `cb2324b` media+settings, `634a8eb` session,
+  `d9eafc8` supervisor. Gates: 471 passed, 3 skipped; mypy both scopes clean; ruff clean.
+  Store smoke: 200 writes enqueue 0.3 ms, flush+read 7.5 ms, journal_mode=wal.
+- Wave 2 behaviour changes: Store writes are fire-and-forget on a "store-writer" thread (errors
+  logged, not raised; reads flush first; close() drains). Speaker adds 40 ms prebuffer after
+  start/flush/underrun. trigger_tokens=100000 by default. Stable 60 s clears the whole supervisor
+  failure log (all categories). run_command/write_file/delete_file also INTERRUPT on extended thinking.
+- Usage contract DECIDED (unverified live): usage_metadata per message = per-turn increment.
+  If a live session shows totals growing cumulatively, revert supervisor `_record_tier_usage` to diffing.
+- Live checks pending: M3 items above + Wave 2 items listed in PLAN.md.
+- NEXT: Wave 3 accuracy and safety hardening (PLAN.md). Partition: frames (media/screen), echo gate
+  (media/), tools/redaction (tools/, policy/), shell cancel + headless EOF + wake-word, genai bump last.
 
 ## Previous handoff — 24 October 2026 (historical)
 

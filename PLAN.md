@@ -26,14 +26,19 @@ Decided: prefer_free_tier default stays True (Free first), confirmed by user.
 Live-socket checks still needed for M3 (see HANDOFF).
 
 ### Wave 2 — latency
-- [ ] Mic `latency="low"` + 40 ms default chunk (`media/microphone.py`, settings)
-- [ ] Speaker blocksize 480 + 40-60 ms prebuffer, RMS in callback (`media/speaker.py`)
-- [ ] SQLite WAL/synchronous=NORMAL/busy_timeout + indexes + off-loop writer (`persist/store.py`, `audit/journal.py`)
-- [ ] GoAway zero backoff; ladder reset after 60 s stable (`core/supervisor.py`)
-- [ ] INTERRUPT scheduling for computer/shell on extended thinking; replay `turn_complete=False`;
-      frame wait timeout on typed text; diagnostics 1 Hz, meters 15 Hz (`core/session.py`)
-- [ ] trigger_tokens default; free-tier rows store 0 USD; settle usage cumulative/incremental
-- [ ] Speech-end to first-audio metric (`obs/metrics.py`)
+- [x] Mic `latency="low"` + 40 ms default chunk (`media/microphone.py`, settings) — `cb2324b`
+- [x] Speaker blocksize 480 + 40 ms prebuffer (start/flush/underrun), RMS in callback (`media/speaker.py`) — `cb2324b`
+- [x] SQLite WAL/synchronous=NORMAL/busy_timeout + indexes + off-loop writer thread (`persist/store.py`; journal is JSONL, unchanged) — `5522e64`
+- [x] GoAway zero backoff (with handle); failure log reset after 60 s stable; replay `turn_complete=False`; duplicate meter loop removed (`core/supervisor.py`) — `d9eafc8`
+- [x] INTERRUPT scheduling for blocking_interrupt tools on extended thinking; frame wait 1.5 s on typed text;
+      diagnostics 1 Hz, meters 15 Hz on change (`core/session.py`) — `634a8eb`
+- [x] trigger_tokens default 100000; free-tier rows store 0 USD (`LiveSession(free_tier=)`); usage contract = per-turn increment
+      (session sums, supervisor TPM records each total_tokens) — `cb2324b`, `634a8eb`, `d9eafc8`
+- [x] `speech_end_to_first_audio_ms` timing (p50/p95 in runtime diagnostics; start = latest input transcription or mute stream end) — `634a8eb`
+
+Wave 2 result: 471 passed, 3 skipped; runtime mypy 40 files + eval mypy 3 files clean; ruff clean.
+Needs live-socket check: usage per-turn assumption (if API turns out cumulative, TPM overcounts), GoAway instant resume,
+INTERRUPT on extended thinking, real-device prebuffer/blocksize, speech-end metric values.
 
 ### Wave 3 — accuracy and safety hardening
 - [ ] Frames: 1280-1568 px, q80-85, subsampling=0, cursor overlay, pixel-hash dedup, reuse mss
