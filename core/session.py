@@ -28,6 +28,7 @@ from core.commands import (
     CancelTool,
     DenyTool,
     Disconnect,
+    Interrupt,
     SendText,
     SetGatingMode,
     SetMicGate,
@@ -470,6 +471,11 @@ class LiveSession:
         self._text_turn_pending = False
         self._turn_evaluated = False
         self._turn_gated = False
+        # User pressed Interrupt mid-reply: drop the rest of this model turn's
+        # audio. Cleared at the turn boundary or a server-side interruption.
+        self._user_interrupted = False
+        # Any model output (audio or transcript) seen since the last boundary.
+        self._model_turn_active = False
         # Post-tool continuation: the model turn that follows a tool response
         # carries no new user speech, so it inherits the decision of the turn
         # that issued the call ("addressed" / "gated") until the next input
@@ -1089,6 +1095,11 @@ class LiveSession:
                                 )
                             )
                         gated = self._turn_gated
+                        if (server_content.model_turn and server_content.model_turn.parts) or (
+                            server_content.output_transcription
+                            and server_content.output_transcription.text
+                        ):
+                            self._model_turn_active = True
 
                         # Barge-in: the server detected user speech and aborted
                         # the model turn. Kill queued playback first, before any
@@ -1099,6 +1110,8 @@ class LiveSession:
                             # audio for the old speech end; start over.
                             self._speech_end_at = None
                             self._first_audio_seen = False
+                            self._model_turn_active = False
+                            self._user_interrupted = False
                         if server_content.interrupted and self._speaker is not None:
                             self._speaker.flush()
 
@@ -1134,6 +1147,7 @@ class LiveSession:
                         model_turn = server_content.model_turn
                         if (
                             not gated
+                            and not self._user_interrupted
                             and model_turn
                             and model_turn.parts
                             and self._speaker is not None
@@ -1196,6 +1210,8 @@ class LiveSession:
                         self._frame_sent_this_utterance = False
                         self._speech_end_at = None
                         self._first_audio_seen = False
+                        self._model_turn_active = False
+                        self._user_interrupted = False
 
                     usage = response.usage_metadata
                     if usage:
@@ -1330,6 +1346,20 @@ class LiveSession:
                     # Typed input is always addressed to the agent, so the next
                     # model turn is exempt from wake-word gating.
                     self._text_turn_pending = True
+
+                elif isinstance(cmd, Interrupt):
+                    if self._speaker is not None:
+                        self._speaker.flush()
+                    # Only a reply that is streaming, or owed for speech that
+                    # just ended, needs its remaining audio dropped. After the
+                    # turn boundary the flush alone stops the buffered tail,
+                    # and the next turn must still play.
+                    self._user_interrupted = (
+                        self._model_turn_active or self._speech_end_at is not None
+                    )
+                    logger.info(
+                        "[INTERRUPT] user stop (mid-turn=%s)", self._user_interrupted
+                    )
 
                 elif isinstance(cmd, SetMicGate):
                     was_open = self._mic_gate_open

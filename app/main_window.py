@@ -47,6 +47,7 @@ from core.commands import (
     CancelTool,
     DenyTool,
     GatingMode,
+    Interrupt,
     SendText,
     SetGatingMode,
     SetMicGate,
@@ -293,6 +294,12 @@ class MainWindow(QMainWindow):
         mini_action.setShortcut("Ctrl+Shift+M")
         mini_action.triggered.connect(self._toggle_mini_mode)
         self.menuBar().addAction(mini_action)
+
+        # Esc stops the model mid-sentence without ending the session.
+        interrupt_action = QAction("Stop &talking", self)
+        interrupt_action.setShortcut("Esc")
+        interrupt_action.triggered.connect(self._interrupt)
+        self.menuBar().addAction(interrupt_action)
 
         # Ctrl+M toggles the mic gate from anywhere in the window.
         mute_shortcut = QShortcut(QKeySequence("Ctrl+M"), self)
@@ -637,6 +644,11 @@ class MainWindow(QMainWindow):
                 monitor=settings.screen_monitor,
             )
         )
+
+    @Slot()
+    def _interrupt(self) -> None:
+        if self._bridge is not None:
+            self._bridge.send_command(Interrupt())
 
     @Slot()
     def _on_disconnect_requested(self) -> None:

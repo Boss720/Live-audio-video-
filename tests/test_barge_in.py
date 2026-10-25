@@ -18,7 +18,8 @@ import pytest
 from google.genai import types
 
 from audit.journal import Journal
-from core.commands import Disconnect
+from core.commands import Disconnect, Interrupt
+from core.events import PartialTranscript
 from core.session import LiveSession
 from media.speaker import Speaker
 from persist.store import Store
@@ -51,6 +52,7 @@ class RecordingSpeaker:
         self.writes: list[bytes] = []
         self.flushes = 0
         self.flushed = asyncio.Event()
+        self.wrote = asyncio.Event()
 
     async def start(self) -> None:
         pass
@@ -60,6 +62,7 @@ class RecordingSpeaker:
 
     def write(self, pcm_bytes: bytes) -> None:
         self.writes.append(pcm_bytes)
+        self.wrote.set()
 
     def flush(self) -> None:
         self.flushes += 1
@@ -239,6 +242,134 @@ async def test_interrupted_server_content_flushes_the_speaker(
     # The pre-interrupt audio was still played; only what was queued behind the
     # barge-in gets dropped (by Speaker.flush, covered above).
     assert speaker.writes == []
+
+
+def _audio_message(pcm: bytes, *, turn_complete: bool = False) -> types.LiveServerMessage:
+    return types.LiveServerMessage(
+        server_content=types.LiveServerContent(
+            model_turn=types.Content(
+                role="model",
+                parts=[types.Part(inline_data=types.Blob(data=pcm, mime_type="audio/pcm"))],
+            ),
+            turn_complete=turn_complete,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_user_interrupt_drops_rest_of_turn_then_next_turn_plays(
+    monkeypatch: Any,
+    settings: AppSettings,
+    tmp_path: Path,
+) -> None:
+    """Interrupt flushes playback and mutes the current reply only."""
+    live = FakeLive()
+    monkeypatch.setattr("google.genai.Client", make_fake_client_factory(live))
+    monkeypatch.setattr("settings.secrets.get_api_key", lambda: "fake-api-key")
+    monkeypatch.setattr("media.devices.list_input_devices", lambda: [])
+    monkeypatch.setattr("media.devices.list_output_devices", lambda: [])
+
+    speaker = RecordingSpeaker()
+    command_queue: asyncio.Queue[Any] = asyncio.Queue()
+    journal = Journal(run_id="user-interrupt", log_dir=tmp_path)
+    session = LiveSession(
+        settings=settings,
+        command_queue=command_queue,
+        event_queue=asyncio.Queue(),
+        journal=journal,
+        store=Store(db_path=tmp_path / "state.db"),
+        run_id="user-interrupt",
+        speaker=speaker,  # type: ignore[arg-type]
+    )
+    async def drive(fake_session: Any) -> None:
+        fake_session.emit(_audio_message(b"\x01\x00"))
+
+    live.on_connect(drive)
+
+    async def wait_for_writes(count: int) -> None:
+        async with asyncio.timeout(5):
+            while len(speaker.writes) < count:
+                speaker.wrote.clear()
+                await speaker.wrote.wait()
+
+    task = asyncio.create_task(session.run())
+    try:
+        await wait_for_writes(1)
+        await command_queue.put(Interrupt())
+        await asyncio.wait_for(speaker.flushed.wait(), timeout=5)
+        fake = live.latest_session
+        assert fake is not None
+        fake.emit(_audio_message(b"\x02\x00", turn_complete=True))
+        fake.emit(_audio_message(b"\x03\x00"))
+        await wait_for_writes(2)
+        await command_queue.put(Disconnect())
+        await asyncio.wait_for(task, timeout=5)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        journal._close()
+
+    assert speaker.writes == [b"\x01\x00", b"\x03\x00"]
+    assert speaker.flushes == 1
+
+
+@pytest.mark.asyncio
+async def test_user_interrupt_before_first_audio_still_mutes_the_reply(
+    monkeypatch: Any,
+    settings: AppSettings,
+    tmp_path: Path,
+) -> None:
+    """Esc after the reply's transcript starts but before its audio arrives."""
+    live = FakeLive()
+    monkeypatch.setattr("google.genai.Client", make_fake_client_factory(live))
+    monkeypatch.setattr("settings.secrets.get_api_key", lambda: "fake-api-key")
+    monkeypatch.setattr("media.devices.list_input_devices", lambda: [])
+    monkeypatch.setattr("media.devices.list_output_devices", lambda: [])
+
+    speaker = RecordingSpeaker()
+    command_queue: asyncio.Queue[Any] = asyncio.Queue()
+    event_queue: asyncio.Queue[Any] = asyncio.Queue()
+    journal = Journal(run_id="early-interrupt", log_dir=tmp_path)
+    session = LiveSession(
+        settings=settings,
+        command_queue=command_queue,
+        event_queue=event_queue,
+        journal=journal,
+        store=Store(db_path=tmp_path / "state.db"),
+        run_id="early-interrupt",
+        speaker=speaker,  # type: ignore[arg-type]
+    )
+
+    async def drive(fake_session: Any) -> None:
+        fake_session.say("Let me think")
+
+    live.on_connect(drive)
+
+    task = asyncio.create_task(session.run())
+    try:
+        async with asyncio.timeout(5):
+            while not isinstance(await event_queue.get(), PartialTranscript):
+                pass
+        await command_queue.put(Interrupt())
+        await asyncio.wait_for(speaker.flushed.wait(), timeout=5)
+        fake = live.latest_session
+        assert fake is not None
+        fake.emit(_audio_message(b"\x02\x00", turn_complete=True))
+        fake.emit(_audio_message(b"\x03\x00"))
+        async with asyncio.timeout(5):
+            while not speaker.writes:
+                speaker.wrote.clear()
+                await speaker.wrote.wait()
+        await command_queue.put(Disconnect())
+        await asyncio.wait_for(task, timeout=5)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        journal._close()
+
+    assert speaker.writes == [b"\x03\x00"]
 
 
 # ----------------------------------------------------------------------

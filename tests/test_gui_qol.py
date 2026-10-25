@@ -19,6 +19,7 @@ from core.commands import (
     CancelTool,
     DenyTool,
     GatingMode,
+    Interrupt,
     SetGatingMode,
     SetShareScreen,
 )
@@ -436,3 +437,13 @@ def test_mini_mode_toggles_and_mirrors_events(window: MainWindow) -> None:
     assert "hello there" in window._pill_caption
     window._exit_mini_mode()
     assert not window._pill.isVisible()
+
+
+def test_interrupt_sends_command_only_when_connected(window: MainWindow) -> None:
+    window._bridge = None
+    window._interrupt()  # no bridge: no-op, no crash
+    bridge = _RecordingBridge()
+    window._bridge = cast(Bridge, bridge)
+    window._interrupt()
+    assert bridge.commands == [Interrupt()]
+    window._bridge = None

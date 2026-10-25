@@ -8,9 +8,10 @@ Workers never edit shared files; the orchestrator wires them after merge.
 ## W5.1 Interrupt command (orchestrator)
 
 - `core/commands.py`: new `Interrupt` command (stop the model's current reply).
-- `core/session.py`: on `Interrupt`, flush the speaker and drop model audio and
-  output transcript for the rest of the current model turn; the flag clears on
-  `turn_complete` or `interrupted`. The session stays connected.
+- `core/session.py`: on `Interrupt`, flush the speaker and, if the reply is
+  still streaming (first audio seen this turn), drop its remaining audio. The
+  flag clears at the turn boundary or a server `interrupted`. Transcripts are
+  kept (the chat shows the whole reply). The session stays connected.
 - `app/main_window.py`: Interrupt action (Esc while connected) and pill wiring
   (`CompanionPill.interrupt_requested`).
 

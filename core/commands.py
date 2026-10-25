@@ -43,6 +43,13 @@ class SendText:
 
 
 @dataclass(frozen=True, slots=True)
+class Interrupt:
+    """Stop the model's current spoken reply; the session stays connected."""
+
+    timestamp: datetime = field(default_factory=_utc_now, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
 class SetMicGate:
     """Open or close the microphone gate. False = muted."""
 
@@ -88,6 +95,7 @@ AgentCommand = (
     Connect
     | Disconnect
     | SendText
+    | Interrupt
     | SetMicGate
     | SetShareScreen
     | ApproveTool
