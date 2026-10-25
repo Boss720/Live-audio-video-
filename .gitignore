@@ -24,3 +24,4 @@ logs/
 /LICENSE
 .agents/
 .pytest-codex-tmp/
+.codex-out/

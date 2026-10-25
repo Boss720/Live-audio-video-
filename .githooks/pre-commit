@@ -1,0 +1,49 @@
+#!/bin/sh
+# Pre-commit checks on staged content (Git for Windows / Git Bash).
+# Bypass with: git commit --no-verify
+
+# No CRLF check: .gitattributes stores *.ps1/*.cmd as LF in the index and checks them out as CRLF.
+problems=0
+list=$(mktemp) || exit 1
+blob=$(mktemp) || exit 1
+trap 'rm -f "$list" "$blob"' EXIT
+
+report() {
+    printf 'pre-commit: %s: %s\n' "$1" "$2"
+    problems=1
+}
+
+# ACMRT: renames and type changes carry new content too. quotepath=off keeps non-ASCII names readable by git show.
+if ! git -c core.quotepath=off diff --cached --name-only --diff-filter=ACMRT > "$list"; then
+    echo "pre-commit: cannot list staged files"
+    exit 1
+fi
+
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if ! git show ":$f" > "$blob" 2>/dev/null; then
+        report "$f" "cannot read staged content"
+        continue
+    fi
+
+    case "$f" in
+        *.[pP][sS]1)
+            if ! head -c 3 "$blob" | od -An -tx1 | LC_ALL=C grep -q 'ef bb bf'; then
+                report "$f" "missing UTF-8 BOM (save as UTF-8 with BOM)"
+            fi
+            if tail -c +4 "$blob" | LC_ALL=C grep -q '[^[:print:][:space:]]'; then
+                report "$f" "non-ASCII characters after BOM"
+            fi
+            ;;
+    esac
+
+    if LC_ALL=C grep -I -E -q 'sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----' "$blob"; then
+        report "$f" "possible secret or API key in staged content"
+    fi
+done < "$list"
+
+if [ "$problems" -ne 0 ]; then
+    echo "pre-commit: fix the above or bypass with git commit --no-verify"
+    exit 1
+fi
+exit 0

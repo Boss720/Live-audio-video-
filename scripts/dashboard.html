@@ -1,0 +1,3443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="data:,">
+  <title>Trinity Operator Dashboard</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+
+      /* Base canvas & surface */
+      --bg-base: #f0f2f5;
+      --bg-surface: #ffffff;
+      --bg-surface-hover: #f7f9fa;
+      --bg-subtle: #eaedf1;
+      --bg-input: #ffffff;
+      --bg-drawer: #ffffff;
+
+      /* Borders */
+      --border-color: #d0d7de;
+      --border-subtle: #e1e4e8;
+      --border-focus: #0969da;
+
+      /* Text tokens */
+      --text-main: #1f2328;
+      --text-secondary: #57606a;
+      --text-muted: #8c959f;
+
+      /* Monospace block */
+      --code-bg: #1f2328;
+      --code-text: #f0f6fc;
+      --code-border: #30363d;
+
+      /* Status colors */
+      --status-live: #1a7f37;
+      --status-live-bg: #dafbe1;
+      --status-offline: #cf222e;
+      --status-offline-bg: #ffebe9;
+      --status-warn: #9a6700;
+      --status-warn-bg: #fff8c5;
+      --status-warn-border: #d4a72c;
+
+      /* Agent accents - Light */
+      --claude-accent: #c2410c;
+      --claude-bg: #fff7ed;
+      --claude-border: #fdba74;
+
+      --codex-accent: #047857;
+      --codex-bg: #ecfdf5;
+      --codex-border: #6ee7b7;
+
+      --antigravity-accent: #1d4ed8;
+      --antigravity-bg: #eff6ff;
+      --antigravity-border: #93c5fd;
+
+      /* State badge colors - Light */
+      --badge-running-bg: #ddf4ff;
+      --badge-running-text: #0969da;
+      --badge-running-border: #54aeff;
+
+      --badge-done-bg: #dafbe1;
+      --badge-done-text: #1a7f37;
+      --badge-done-border: #4ac26b;
+
+      --badge-failed-bg: #ffebe9;
+      --badge-failed-text: #cf222e;
+      --badge-failed-border: #ff8182;
+
+      --badge-merged-bg: #fbefff;
+      --badge-merged-text: #8250df;
+      --badge-merged-border: #c297ff;
+
+      --badge-cancelled-bg: #f6f8fa;
+      --badge-cancelled-text: #57606a;
+      --badge-cancelled-border: #d0d7de;
+
+      --badge-waiting-bg: #fff8c5;
+      --badge-waiting-text: #9a6700;
+      --badge-waiting-border: #d4a72c;
+
+      --badge-other-bg: #f6f8fa;
+      --badge-other-text: #57606a;
+      --badge-other-border: #d0d7de;
+
+      /* Progress track */
+      --track-bg: #e1e4e8;
+      --track-fill: #1a7f37;
+      --rate-limit-fill: #0969da;
+
+      /* Shadows & overlay */
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+      --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.15);
+      --overlay-backdrop: rgba(0, 0, 0, 0.4);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg-base: #0a0d12;
+        --bg-surface: #121820;
+        --bg-surface-hover: #18202b;
+        --bg-subtle: #1e2634;
+        --bg-input: #0a0d12;
+        --bg-drawer: #121820;
+
+        --border-color: #273142;
+        --border-subtle: #1c2430;
+        --border-focus: #58a6ff;
+
+        --text-main: #e6edf3;
+        --text-secondary: #9da7b3;
+        --text-muted: #8b949e;
+
+        --code-bg: #07090d;
+        --code-text: #c9d1d9;
+        --code-border: #212936;
+
+        --status-live: #3fb950;
+        --status-live-bg: rgba(63, 185, 80, 0.15);
+        --status-offline: #f85149;
+        --status-offline-bg: rgba(248, 81, 73, 0.15);
+        --status-warn: #e3b341;
+        --status-warn-bg: rgba(210, 153, 34, 0.15);
+        --status-warn-border: rgba(210, 153, 34, 0.4);
+
+        /* Agent accents - Dark */
+        --claude-accent: #fb923c;
+        --claude-bg: rgba(251, 146, 60, 0.12);
+        --claude-border: rgba(251, 146, 60, 0.35);
+
+        --codex-accent: #34d399;
+        --codex-bg: rgba(52, 211, 153, 0.12);
+        --codex-border: rgba(52, 211, 153, 0.35);
+
+        --antigravity-accent: #60a5fa;
+        --antigravity-bg: rgba(96, 165, 250, 0.12);
+        --antigravity-border: rgba(96, 165, 250, 0.35);
+
+        /* State badge colors - Dark */
+        --badge-running-bg: rgba(56, 139, 253, 0.15);
+        --badge-running-text: #58a6ff;
+        --badge-running-border: rgba(56, 139, 253, 0.4);
+
+        --badge-done-bg: rgba(46, 160, 67, 0.15);
+        --badge-done-text: #3fb950;
+        --badge-done-border: rgba(46, 160, 67, 0.4);
+
+        --badge-failed-bg: rgba(248, 81, 73, 0.15);
+        --badge-failed-text: #ff7b72;
+        --badge-failed-border: rgba(248, 81, 73, 0.4);
+
+        --badge-merged-bg: rgba(163, 113, 247, 0.15);
+        --badge-merged-text: #bc8cff;
+        --badge-merged-border: rgba(163, 113, 247, 0.4);
+
+        --badge-cancelled-bg: rgba(110, 118, 129, 0.15);
+        --badge-cancelled-text: #8b949e;
+        --badge-cancelled-border: rgba(110, 118, 129, 0.4);
+
+        --badge-waiting-bg: rgba(210, 153, 34, 0.15);
+        --badge-waiting-text: #e3b341;
+        --badge-waiting-border: rgba(210, 153, 34, 0.4);
+
+        --badge-other-bg: rgba(110, 118, 129, 0.15);
+        --badge-other-text: #8b949e;
+        --badge-other-border: rgba(110, 118, 129, 0.4);
+
+        --track-bg: #1e2634;
+        --track-fill: #238636;
+        --rate-limit-fill: #388bfd;
+
+        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+        --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+        --overlay-backdrop: rgba(0, 0, 0, 0.65);
+      }
+    }
+
+    /* Reset & layout */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-base);
+      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 13px;
+      line-height: 1.45;
+      padding: 14px;
+      min-width: 0;
+      width: 100%;
+      overflow-x: hidden;
+      font-variant-numeric: tabular-nums;
+    }
+
+    @media (max-width: 600px) {
+      body {
+        padding: 8px;
+      }
+    }
+
+    .container {
+      max-width: 1540px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    /* Top bar */
+    .header-bar {
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .header-row-primary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .brand-section {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand-title {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .brand-tag {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background-color: var(--bg-subtle);
+      color: var(--text-secondary);
+      border: 1px solid var(--border-color);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .status-group {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 12px;
+    }
+
+    .indicator-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 8px;
+      border-radius: 12px;
+      font-weight: 600;
+      font-size: 11px;
+      letter-spacing: 0.03em;
+    }
+
+    .indicator-pill.live {
+      background-color: var(--status-live-bg);
+      color: var(--status-live);
+      border: 1px solid currentColor;
+    }
+
+    .indicator-pill.offline {
+      background-color: var(--status-offline-bg);
+      color: var(--status-offline);
+      border: 1px solid currentColor;
+    }
+
+    .indicator-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background-color: currentColor;
+    }
+
+    .indicator-pill.live .indicator-dot {
+      box-shadow: 0 0 6px currentColor;
+    }
+
+    .refresh-time {
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    /* Agent stats cards in header */
+    .agent-counts-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    @media (max-width: 900px) {
+      .agent-counts-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .agent-stat-card {
+      padding: 10px 12px;
+      border-radius: 5px;
+      border: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      background-color: var(--bg-surface);
+    }
+
+    .agent-stat-card.claude {
+      border-left: 4px solid var(--claude-accent);
+      background-color: var(--claude-bg);
+    }
+
+    .agent-stat-card.codex {
+      border-left: 4px solid var(--codex-accent);
+      background-color: var(--codex-bg);
+    }
+
+    .agent-stat-card.antigravity {
+      border-left: 4px solid var(--antigravity-accent);
+      background-color: var(--antigravity-bg);
+    }
+
+    .agent-card-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .agent-label-wrap {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .agent-label {
+      font-weight: 700;
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .agent-stat-card.claude .agent-label { color: var(--claude-accent); }
+    .agent-stat-card.codex .agent-label { color: var(--codex-accent); }
+    .agent-stat-card.antigravity .agent-label { color: var(--antigravity-accent); }
+
+    .avail-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+      flex-shrink: 0;
+      cursor: help;
+    }
+
+    .avail-dot.available {
+      background-color: var(--status-live);
+      box-shadow: 0 0 5px var(--status-live);
+    }
+
+    .avail-dot.unavailable {
+      background-color: var(--status-offline);
+      box-shadow: 0 0 5px var(--status-offline);
+    }
+
+    .agent-unavail-badge {
+      font-size: 11px;
+      color: var(--status-offline);
+      font-weight: 600;
+      background-color: var(--status-offline-bg);
+      border: 1px solid currentColor;
+      padding: 1px 6px;
+      border-radius: 4px;
+      word-break: break-word;
+    }
+
+    .agent-metrics {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      flex-wrap: wrap;
+    }
+
+    .metric-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+
+    .metric-pill.running {
+      font-weight: 700;
+    }
+
+    .agent-model-info {
+      font-size: 11px;
+      color: var(--text-secondary);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .agent-running-models {
+      font-size: 11px;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+
+    .model-chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 600;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background-color: var(--bg-subtle);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      white-space: nowrap;
+    }
+
+    /* Offline alert bar */
+    .offline-alert-bar {
+      display: none;
+      background-color: var(--status-offline-bg);
+      border: 1px solid var(--status-offline);
+      color: var(--status-offline);
+      padding: 8px 12px;
+      border-radius: 5px;
+      font-size: 12px;
+      font-weight: 600;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .offline-alert-bar.active {
+      display: flex;
+    }
+
+    /* Unavailable lane banner */
+    .lane-unavail-banner {
+      background-color: var(--status-warn-bg);
+      border: 1px solid var(--status-warn-border);
+      color: var(--status-warn);
+      padding: 8px 10px;
+      border-radius: 4px;
+      font-size: 11px;
+      line-height: 1.4;
+      font-weight: 600;
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+    }
+
+    /* Filter & Controls bar */
+    .controls-bar {
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 8px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .filter-group {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .filter-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .filter-item label {
+      font-weight: 600;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    select.filter-select {
+      background-color: var(--bg-input);
+      color: var(--text-main);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-size: 12px;
+      outline: none;
+      font-family: inherit;
+    }
+
+    select.filter-select:focus {
+      border-color: var(--border-focus);
+    }
+
+    input[type="checkbox"] {
+      cursor: pointer;
+      accent-color: var(--border-focus);
+    }
+
+    .filter-stats {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    /* Lanes section */
+    .lanes-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      align-items: start;
+    }
+
+    @media (max-width: 900px) {
+      .lanes-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .lane-column {
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      display: flex;
+      flex-direction: column;
+      box-shadow: var(--shadow-sm);
+      min-width: 0;
+    }
+
+    .lane-header {
+      padding: 10px 14px;
+      border-bottom: 2px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .lane-column.claude .lane-header {
+      border-bottom-color: var(--claude-accent);
+      background-color: var(--claude-bg);
+    }
+
+    .lane-column.codex .lane-header {
+      border-bottom-color: var(--codex-accent);
+      background-color: var(--codex-bg);
+    }
+
+    .lane-column.antigravity .lane-header {
+      border-bottom-color: var(--antigravity-accent);
+      background-color: var(--antigravity-bg);
+    }
+
+    .lane-title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .lane-title {
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .lane-column.claude .lane-title { color: var(--claude-accent); }
+    .lane-column.codex .lane-title { color: var(--codex-accent); }
+    .lane-column.antigravity .lane-title { color: var(--antigravity-accent); }
+
+    .lane-task-count {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 10px;
+      border: 1px solid var(--border-color);
+      background-color: var(--bg-surface);
+      color: var(--text-secondary);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .lane-body {
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-height: 80px;
+    }
+
+    .lane-empty {
+      padding: 24px 12px;
+      text-align: center;
+      color: var(--text-muted);
+      font-style: italic;
+      font-size: 12px;
+    }
+
+    .group-section-title {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+      padding: 4px 2px 2px 2px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-subtle);
+      margin-bottom: 4px;
+    }
+
+    /* Claude Sessions Group */
+    .claude-sessions-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+
+    .session-card {
+      border: 1px solid var(--border-color);
+      border-radius: 5px;
+      background-color: var(--bg-surface);
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .session-card.is-active {
+      border-left: 3px solid var(--claude-accent);
+    }
+
+    .session-header-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .session-title-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      min-width: 0;
+      flex: 1 1 140px;
+    }
+
+    .session-title {
+      font-weight: 700;
+      font-size: 13px;
+      color: var(--text-main);
+      word-break: break-word;
+    }
+
+    .pulsing-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: var(--status-live);
+      display: inline-block;
+      flex-shrink: 0;
+    }
+
+    .pulsing-dot.active {
+      animation: pulse-ring 1.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+    }
+
+    @keyframes pulse-ring {
+      0%, 100% {
+        opacity: 1;
+        transform: scale(1);
+        box-shadow: 0 0 0 0 rgba(46, 160, 67, 0.5);
+      }
+      50% {
+        opacity: 0.6;
+        transform: scale(0.9);
+        box-shadow: 0 0 0 4px rgba(46, 160, 67, 0);
+      }
+    }
+
+    .session-meta-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .subagents-container {
+      background-color: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
+      border-radius: 4px;
+      padding: 6px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 4px;
+    }
+
+    .subagents-header {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-secondary);
+    }
+
+    .subagent-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 4px 6px;
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 3px;
+      font-size: 11px;
+      flex-wrap: wrap;
+    }
+
+    .subagent-info {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .subagent-desc {
+      font-weight: 600;
+      color: var(--text-main);
+    }
+
+    /* Task Card */
+    .task-card {
+      border: 1px solid var(--border-color);
+      border-radius: 5px;
+      background-color: var(--bg-surface);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      transition: border-color 0.15s ease, background-color 0.15s ease;
+      cursor: pointer;
+    }
+
+    .task-card:hover {
+      background-color: var(--bg-surface-hover);
+      border-color: var(--border-focus);
+    }
+
+    .task-card.is-running {
+      border-left: 3px solid var(--badge-running-text);
+    }
+
+    .task-card-header {
+      padding: 9px 11px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      user-select: none;
+    }
+
+    .task-title-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .task-name-group {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+
+    .task-name {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-weight: 700;
+      font-size: 13px;
+      color: var(--text-main);
+      word-break: break-all;
+    }
+
+    .repo-pill {
+      font-size: 11px;
+      padding: 1px 6px;
+      border-radius: 3px;
+      background-color: var(--bg-subtle);
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      white-space: nowrap;
+    }
+
+    .badges-group {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    /* State badge */
+    .state-badge {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 3px;
+      letter-spacing: 0.05em;
+      border: 1px solid currentColor;
+      text-transform: uppercase;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: nowrap;
+    }
+
+    .state-badge.state-running {
+      background-color: var(--badge-running-bg);
+      color: var(--badge-running-text);
+      border-color: var(--badge-running-border);
+    }
+
+    .state-badge.state-done {
+      background-color: var(--badge-done-bg);
+      color: var(--badge-done-text);
+      border-color: var(--badge-done-border);
+    }
+
+    .state-badge.state-failed {
+      background-color: var(--badge-failed-bg);
+      color: var(--badge-failed-text);
+      border-color: var(--badge-failed-border);
+    }
+
+    .state-badge.state-merged {
+      background-color: var(--badge-merged-bg);
+      color: var(--badge-merged-text);
+      border-color: var(--badge-merged-border);
+    }
+
+    .state-badge.state-cancelled {
+      background-color: var(--badge-cancelled-bg);
+      color: var(--badge-cancelled-text);
+      border-color: var(--badge-cancelled-border);
+    }
+
+    .state-badge.state-waiting {
+      background-color: var(--badge-waiting-bg);
+      color: var(--badge-waiting-text);
+      border-color: var(--badge-waiting-border);
+    }
+
+    .state-badge.state-other {
+      background-color: var(--badge-other-bg);
+      color: var(--badge-other-text);
+      border-color: var(--badge-other-border);
+    }
+
+    .task-status-row {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.35;
+      word-break: break-word;
+    }
+
+    /* Metrics highlight row */
+    .task-stats-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 11px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: var(--text-secondary);
+      flex-wrap: wrap;
+    }
+
+    .stat-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+
+    .last-tool-chip {
+      color: var(--badge-running-text);
+      font-weight: 600;
+    }
+
+    .live-tick {
+      font-weight: 700;
+      color: var(--badge-running-text);
+    }
+
+    .task-meta-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding-top: 4px;
+      border-top: 1px dashed var(--border-subtle);
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .meta-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .runner-pill {
+      font-size: 10px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+    }
+
+    .runner-pill.alive {
+      background-color: var(--status-live-bg);
+      color: var(--status-live);
+      border: 1px solid var(--status-live);
+    }
+
+    .runner-pill.idle {
+      background-color: var(--bg-subtle);
+      color: var(--text-muted);
+      border: 1px solid var(--border-color);
+    }
+
+    .task-scope-row {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      word-break: break-all;
+    }
+
+    .card-toggle-icon {
+      font-size: 10px;
+      color: var(--text-muted);
+      transition: transform 0.2s ease;
+      display: inline-block;
+    }
+
+    .task-card.expanded .card-toggle-icon {
+      transform: rotate(90deg);
+    }
+
+    /* Expandable drawer */
+    .task-card-drawer {
+      display: none;
+      border-top: 1px solid var(--border-color);
+      background-color: var(--bg-base);
+      padding: 10px 12px;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .task-card.expanded .task-card-drawer {
+      display: flex;
+    }
+
+    .drawer-section {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .drawer-label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .mono-block {
+      background-color: var(--code-bg);
+      color: var(--code-text);
+      border: 1px solid var(--code-border);
+      border-radius: 4px;
+      padding: 8px 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.4;
+      max-height: 220px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .mono-empty {
+      color: var(--text-muted);
+      font-style: italic;
+      font-size: 11px;
+      padding: 4px 0;
+    }
+
+    /* Token detail breakdown */
+    .token-breakdown-box {
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      padding: 8px 10px;
+      font-size: 11px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .token-breakdown-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    /* Rate limits */
+    .rate-limit-card {
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      padding: 6px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 11px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .rate-limit-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+    }
+
+    .rate-limit-track {
+      width: 100%;
+      height: 6px;
+      background-color: var(--track-bg);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .rate-limit-fill {
+      height: 100%;
+      background-color: var(--rate-limit-fill);
+      transition: width 0.3s ease;
+    }
+
+    /* Sub-chats list */
+    .subchats-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .subchat-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-size: 11px;
+      flex-wrap: wrap;
+    }
+
+    /* Execution stats line */
+    .task-execution-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--text-secondary);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      flex-wrap: wrap;
+    }
+
+    .task-execution-row .exec-sep {
+      color: var(--text-muted);
+    }
+
+    /* Tool breakdown list */
+    .tool-breakdown-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      padding: 8px 10px;
+    }
+
+    .tool-bar-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .tool-bar-name {
+      width: 120px;
+      flex-shrink: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--text-main);
+    }
+
+    .tool-bar-track {
+      flex: 1;
+      height: 6px;
+      background-color: var(--track-bg);
+      border-radius: 3px;
+      overflow: hidden;
+      min-width: 40px;
+    }
+
+    .tool-bar-fill {
+      height: 100%;
+      background-color: var(--rate-limit-fill);
+      border-radius: 3px;
+      transition: width 0.3s ease;
+    }
+
+    .tool-bar-count {
+      min-width: 24px;
+      text-align: right;
+      color: var(--text-secondary);
+      font-weight: 600;
+    }
+
+    /* Files touched box */
+    .files-touched-box {
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      padding: 6px 10px;
+      font-size: 11px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      max-height: 180px;
+      overflow-y: auto;
+    }
+
+    .file-touched-item {
+      color: var(--text-main);
+      word-break: break-all;
+      padding: 1px 0;
+      line-height: 1.4;
+    }
+
+    /* Action buttons */
+    .btn-chat {
+      background-color: var(--bg-subtle);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: background-color 0.15s ease, border-color 0.15s ease;
+      font-family: inherit;
+    }
+
+    .btn-chat:hover {
+      background-color: var(--bg-surface-hover);
+      border-color: var(--border-focus);
+    }
+
+    .btn-chat.primary {
+      background-color: var(--badge-running-bg);
+      color: var(--badge-running-text);
+      border-color: var(--badge-running-border);
+    }
+
+    .btn-chat.primary:hover {
+      background-color: var(--border-focus);
+      color: #ffffff;
+    }
+
+    .btn-copy {
+      background-color: var(--bg-subtle);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: background-color 0.15s ease, border-color 0.15s ease;
+      font-family: inherit;
+      line-height: 1.3;
+      align-self: center;
+    }
+
+    .btn-copy:hover {
+      background-color: var(--bg-surface-hover);
+      border-color: var(--border-focus);
+    }
+
+    /* Chat Drawer Overlay */
+    .chat-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background-color: var(--overlay-backdrop);
+      z-index: 998;
+      backdrop-filter: blur(1px);
+    }
+
+    .chat-backdrop.open {
+      display: block;
+    }
+
+    .chat-drawer {
+      display: flex;
+      flex-direction: column;
+      position: fixed;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: min(640px, 92vw);
+      background-color: var(--bg-drawer);
+      border-left: 1px solid var(--border-color);
+      box-shadow: var(--shadow-lg);
+      z-index: 999;
+      transform: translateX(100%);
+      transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .chat-drawer.open {
+      transform: translateX(0);
+    }
+
+    @media (max-width: 600px) {
+      .chat-drawer {
+        width: 100vw;
+        max-width: 100vw;
+        border-left: none;
+      }
+    }
+
+    .chat-header {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border-color);
+      background-color: var(--bg-surface);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .chat-header-row1 {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .chat-title-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .chat-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-main);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .btn-close-drawer {
+      background: transparent;
+      border: none;
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text-secondary);
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 4px;
+      line-height: 1;
+    }
+
+    .btn-close-drawer:hover {
+      background-color: var(--bg-subtle);
+      color: var(--text-main);
+    }
+
+    @media (max-width: 600px) {
+      .btn-chat,
+      .btn-copy {
+        min-height: 44px;
+        padding: 8px 14px;
+      }
+
+      .btn-close-drawer {
+        min-height: 44px;
+        min-width: 44px;
+        padding: 8px 14px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+    }
+
+    .chat-header-row2 {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    .chat-header-meta {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .chat-header-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .chat-toggle-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      user-select: none;
+      cursor: pointer;
+    }
+
+    .chat-body-container {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      scroll-behavior: auto;
+    }
+
+    .chat-messages.hide-tools .chat-msg.role-tool,
+    .chat-messages.hide-tools .chat-msg.role-result {
+      display: none !important;
+    }
+
+    .chat-messages.hide-thinking .chat-msg.role-thinking {
+      display: none !important;
+    }
+
+    .chat-msg {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      border-radius: 5px;
+      padding: 8px 10px;
+      border: 1px solid var(--border-color);
+      background-color: var(--bg-surface);
+      font-size: 12px;
+      line-height: 1.45;
+      word-break: break-word;
+    }
+
+    .chat-msg-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      border-bottom: 1px dashed var(--border-subtle);
+      padding-bottom: 3px;
+      margin-bottom: 2px;
+    }
+
+    .chat-msg-role {
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .chat-msg-time {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: var(--text-muted);
+      font-weight: normal;
+    }
+
+    .chat-msg.role-user {
+      border-color: var(--border-focus);
+      background-color: var(--bg-subtle);
+    }
+    .chat-msg.role-user .chat-msg-role {
+      color: var(--border-focus);
+    }
+
+    .chat-msg.role-assistant {
+      border-color: var(--border-color);
+      background-color: var(--bg-surface);
+    }
+
+    .chat-msg.role-thinking {
+      background-color: var(--bg-subtle);
+      border-color: var(--border-subtle);
+      color: var(--text-secondary);
+      font-style: italic;
+    }
+    .chat-msg.role-thinking .chat-msg-role {
+      color: var(--text-muted);
+    }
+
+    .chat-msg.role-tool {
+      background-color: var(--bg-surface);
+      border-color: var(--border-color);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .chat-msg.role-result {
+      background-color: var(--bg-surface);
+      border-color: var(--border-color);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .chat-msg.role-system {
+      background-color: var(--bg-subtle);
+      border: 1px dashed var(--border-color);
+      font-style: italic;
+      color: var(--text-muted);
+      align-self: center;
+      max-width: 90%;
+      text-align: center;
+    }
+
+    .msg-collapsible {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .msg-content-preview {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      background-color: var(--code-bg);
+      color: var(--code-text);
+      padding: 6px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--code-border);
+    }
+
+    .msg-content-preview.collapsed {
+      max-height: 4.6em;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .btn-toggle-expand {
+      align-self: flex-start;
+      background: transparent;
+      border: none;
+      color: var(--border-focus);
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      padding: 2px 0;
+      text-decoration: underline;
+    }
+
+    .btn-jump-latest {
+      position: absolute;
+      bottom: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      background-color: var(--text-main);
+      color: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 20px;
+      padding: 6px 14px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: var(--shadow-lg);
+      display: none;
+      align-items: center;
+      gap: 6px;
+      z-index: 10;
+    }
+
+    .btn-jump-latest.visible {
+      display: inline-flex;
+    }
+
+    .chat-error-inline {
+      background-color: var(--status-offline-bg);
+      border: 1px solid var(--status-offline);
+      color: var(--status-offline);
+      padding: 10px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      display: none;
+    }
+
+    .chat-error-inline.active {
+      display: block;
+    }
+
+    /* Repositories Section */
+    .repos-section {
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      box-shadow: var(--shadow-sm);
+      overflow: hidden;
+    }
+
+    .repos-header {
+      padding: 10px 16px;
+      background-color: var(--bg-subtle);
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .repos-title {
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .repos-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+      gap: 14px;
+      padding: 14px;
+    }
+
+    @media (max-width: 600px) {
+      .repos-grid {
+        grid-template-columns: 1fr;
+        padding: 8px;
+      }
+    }
+
+    .repo-card {
+      border: 1px solid var(--border-color);
+      border-radius: 5px;
+      background-color: var(--bg-surface);
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .repo-card-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .repo-title-group {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .repo-name {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    .repo-path {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      word-break: break-all;
+    }
+
+    .repo-badges {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .repo-badge {
+      font-size: 11px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid var(--border-color);
+      background-color: var(--bg-subtle);
+      color: var(--text-secondary);
+      font-weight: 600;
+    }
+
+    .repo-badge.active-alert {
+      background-color: var(--badge-waiting-bg);
+      color: var(--badge-waiting-text);
+      border-color: var(--badge-waiting-border);
+    }
+
+    /* Progress bar */
+    .progress-box {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .progress-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .progress-label {
+      font-weight: 600;
+      color: var(--text-secondary);
+    }
+
+    .progress-track {
+      width: 100%;
+      height: 7px;
+      background-color: var(--track-bg);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background-color: var(--track-fill);
+      transition: width 0.3s ease;
+    }
+
+    .plan-open-list {
+      margin-top: 4px;
+      padding-left: 18px;
+      font-size: 11px;
+      color: var(--text-secondary);
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .plan-open-list li {
+      word-break: break-word;
+    }
+
+    .handoff-box {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      border-top: 1px dashed var(--border-subtle);
+      padding-top: 8px;
+    }
+
+    .handoff-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-secondary);
+    }
+
+    .handoff-list {
+      padding-left: 18px;
+      font-size: 11px;
+      color: var(--text-secondary);
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .handoff-list li {
+      word-break: break-word;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header bar -->
+    <header class="header-bar">
+      <div class="header-row-primary">
+        <div class="brand-section">
+          <div class="brand-title">
+            <span>TRINITY</span>
+            <span class="brand-tag">OPERATOR CONSOLE</span>
+          </div>
+        </div>
+        <div class="status-group">
+          <div id="live-indicator" class="indicator-pill live">
+            <span class="indicator-dot"></span>
+            <span id="live-text">LIVE</span>
+          </div>
+          <div id="refresh-time" class="refresh-time">Connecting...</div>
+        </div>
+      </div>
+
+      <!-- Agent stats counters with availability and model info -->
+      <div class="agent-counts-grid">
+        <!-- Claude -->
+        <div class="agent-stat-card claude" id="card-agent-claude">
+          <div class="agent-card-top">
+            <div class="agent-label-wrap">
+              <span class="avail-dot available" id="avail-dot-claude" title="Checking availability..."></span>
+              <span class="agent-label">Claude</span>
+            </div>
+            <div id="avail-text-claude"></div>
+          </div>
+          <div class="agent-metrics" id="metrics-claude">
+            <span class="metric-pill running"><span id="claude-running">0</span> run</span>
+            <span>·</span>
+            <span class="metric-pill"><span id="claude-done">0</span> done</span>
+            <span>·</span>
+            <span class="metric-pill"><span id="claude-failed">0</span> fail</span>
+            <span>·</span>
+            <span class="metric-pill"><span id="claude-total">0</span> tot</span>
+          </div>
+          <div class="agent-model-info" id="model-claude">Default: -</div>
+          <div class="agent-running-models" id="running-models-claude"></div>
+        </div>
+
+        <!-- Codex -->
+        <div class="agent-stat-card codex" id="card-agent-codex">
+          <div class="agent-card-top">
+            <div class="agent-label-wrap">
+              <span class="avail-dot available" id="avail-dot-codex" title="Checking availability..."></span>
+              <span class="agent-label">Codex</span>
+            </div>
+            <div id="avail-text-codex"></div>
+          </div>
+          <div class="agent-metrics" id="metrics-codex">
+            <span class="metric-pill running"><span id="codex-running">0</span> run</span>
+            <span>·</span>
+            <span class="metric-pill"><span id="codex-done">0</span> done</span>
+            <span>·</span>
+            <span class="metric-pill"><span id="codex-failed">0</span> fail</span>
+            <span>·</span>
+            <span class="metric-pill"><span id="codex-total">0</span> tot</span>
+          </div>
+          <div class="agent-model-info" id="model-codex">Default: -</div>
+          <div class="agent-running-models" id="running-models-codex"></div>
+        </div>
+
+        <!-- Antigravity -->
+        <div class="agent-stat-card antigravity" id="card-agent-antigravity">
+          <div class="agent-card-top">
+            <div class="agent-label-wrap">
+              <span class="avail-dot available" id="avail-dot-antigravity" title="Checking availability..."></span>
+              <span class="agent-label">Antigravity</span>
+            </div>
+            <div id="avail-text-antigravity"></div>
+          </div>
+          <div class="agent-metrics" id="metrics-antigravity">
+            <span class="metric-pill running"><span id="antigravity-running">0</span> run</span>
+            <span>·</span>
+            <span class="metric-pill"><span id="antigravity-done">0</span> done</span>
+            <span>·</span>
+            <span class="metric-pill"><span id="antigravity-failed">0</span> fail</span>
+            <span>·</span>
+            <span class="metric-pill"><span id="antigravity-total">0</span> tot</span>
+          </div>
+          <div class="agent-model-info" id="model-antigravity">Default: -</div>
+          <div class="agent-running-models" id="running-models-antigravity"></div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Offline Alert Banner -->
+    <div id="offline-alert" class="offline-alert-bar">
+      <span><strong>SERVER OFFLINE:</strong> Unable to connect to state API. Retrying every 3s. Preserving last known snapshot.</span>
+      <span id="offline-alert-time" style="font-family: ui-monospace, monospace;"></span>
+    </div>
+
+    <!-- Filter & Controls Toolbar -->
+    <div class="controls-bar">
+      <div class="filter-group">
+        <div class="filter-item">
+          <label for="repo-filter">Repository:</label>
+          <select id="repo-filter" class="filter-select">
+            <option value="all">All Repositories</option>
+          </select>
+        </div>
+        <div class="filter-item">
+          <input type="checkbox" id="hide-finished">
+          <label for="hide-finished">Hide finished (merged &amp; cancelled)</label>
+        </div>
+      </div>
+      <div class="filter-stats" id="filter-stats">
+        Showing all tasks
+      </div>
+    </div>
+
+    <!-- 3-Lane Grid -->
+    <main class="lanes-grid">
+      <!-- Claude Lane -->
+      <section class="lane-column claude" id="lane-claude">
+        <div class="lane-header">
+          <div class="lane-title-wrap">
+            <span class="lane-title">Claude</span>
+          </div>
+          <span class="lane-task-count" id="count-claude">0 tasks</span>
+        </div>
+        <div class="lane-body" id="body-claude">
+          <!-- Unavailable banner & tasks rendered here -->
+          <div class="lane-empty">No tasks</div>
+        </div>
+      </section>
+
+      <!-- Codex Lane -->
+      <section class="lane-column codex" id="lane-codex">
+        <div class="lane-header">
+          <div class="lane-title-wrap">
+            <span class="lane-title">Codex</span>
+          </div>
+          <span class="lane-task-count" id="count-codex">0 tasks</span>
+        </div>
+        <div class="lane-body" id="body-codex">
+          <!-- Unavailable banner & tasks rendered here -->
+          <div class="lane-empty">No tasks</div>
+        </div>
+      </section>
+
+      <!-- Antigravity Lane -->
+      <section class="lane-column antigravity" id="lane-antigravity">
+        <div class="lane-header">
+          <div class="lane-title-wrap">
+            <span class="lane-title">Antigravity</span>
+          </div>
+          <span class="lane-task-count" id="count-antigravity">0 tasks</span>
+        </div>
+        <div class="lane-body" id="body-antigravity">
+          <!-- Unavailable banner & tasks rendered here -->
+          <div class="lane-empty">No tasks</div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Repositories Section -->
+    <section class="repos-section">
+      <div class="repos-header">
+        <div class="repos-title">
+          <span>Tracked Repositories</span>
+          <span class="lane-task-count" id="repo-count-badge">0</span>
+        </div>
+      </div>
+      <div class="repos-grid" id="repos-container">
+        <!-- Rendered dynamically -->
+      </div>
+    </section>
+  </div>
+
+  <!-- Chat Drawer Backdrop -->
+  <div id="chat-backdrop" class="chat-backdrop"></div>
+
+  <!-- Chat Drawer Panel -->
+  <aside id="chat-drawer" class="chat-drawer" role="dialog" aria-modal="true" aria-labelledby="chat-drawer-title">
+    <div class="chat-header">
+      <div class="chat-header-row1">
+        <div class="chat-title-group">
+          <span id="chat-agent-badge" class="model-chip"></span>
+          <h2 id="chat-drawer-title" class="chat-title">Agent Chat</h2>
+        </div>
+        <button id="chat-close-btn" class="btn-close-drawer" aria-label="Close chat drawer">&times;</button>
+      </div>
+
+      <div class="chat-header-row2">
+        <div class="chat-header-meta">
+          <span id="chat-model-badge" class="model-chip"></span>
+          <span id="chat-updated-time"></span>
+        </div>
+        <div class="chat-header-controls">
+          <label class="chat-toggle-item" title="Poll updates every 3s">
+            <input type="checkbox" id="chat-live-toggle">
+            <span>Live (3s)</span>
+          </label>
+          <label class="chat-toggle-item">
+            <input type="checkbox" id="chat-hide-tools">
+            <span>Hide tools</span>
+          </label>
+          <label class="chat-toggle-item">
+            <input type="checkbox" id="chat-hide-thinking">
+            <span>Hide thinking</span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="chat-body-container">
+      <div id="chat-error-inline" class="chat-error-inline"></div>
+      <div id="chat-messages" class="chat-messages">
+        <!-- Rendered dynamically -->
+      </div>
+      <button id="chat-jump-latest" class="btn-jump-latest" aria-label="Jump to latest message">
+        <span>&darr; Jump to latest</span>
+      </button>
+    </div>
+  </aside>
+
+  <script>
+    (function () {
+      'use strict';
+
+      // State and configuration
+      const urlParams = new URLSearchParams(window.location.search);
+      const isSample = urlParams.get('sample') === '1';
+      const stateUrl = isSample ? 'dashboard-sample.json' : '/api/state';
+
+      let lastStateData = null;
+      let expandedTaskKeys = new Set();
+      let currentRepoFilter = 'all';
+      let hideFinished = false;
+
+      // Chat drawer state
+      let activeChatKey = null;
+      let chatRequestSeq = 0;
+      let activeChatMeta = null;
+      let chatPollTimer = null;
+      let hideChatTools = false;
+      let hideChatThinking = false;
+      let userScrolledUp = false;
+
+      // DOM Elements
+      const liveIndicator = document.getElementById('live-indicator');
+      const liveText = document.getElementById('live-text');
+      const refreshTime = document.getElementById('refresh-time');
+      const offlineAlert = document.getElementById('offline-alert');
+      const offlineAlertTime = document.getElementById('offline-alert-time');
+
+      const repoFilterSelect = document.getElementById('repo-filter');
+      const hideFinishedCheckbox = document.getElementById('hide-finished');
+      const filterStats = document.getElementById('filter-stats');
+
+      const laneBodies = {
+        claude: document.getElementById('body-claude'),
+        codex: document.getElementById('body-codex'),
+        antigravity: document.getElementById('body-antigravity')
+      };
+
+      const laneCounts = {
+        claude: document.getElementById('count-claude'),
+        codex: document.getElementById('count-codex'),
+        antigravity: document.getElementById('count-antigravity')
+      };
+
+      const reposContainer = document.getElementById('repos-container');
+      const repoCountBadge = document.getElementById('repo-count-badge');
+
+      // Chat drawer DOM elements
+      const chatBackdrop = document.getElementById('chat-backdrop');
+      const chatDrawer = document.getElementById('chat-drawer');
+      const chatTitleEl = document.getElementById('chat-drawer-title');
+      const chatAgentBadge = document.getElementById('chat-agent-badge');
+      const chatModelBadge = document.getElementById('chat-model-badge');
+      const chatUpdatedTime = document.getElementById('chat-updated-time');
+      const chatCloseBtn = document.getElementById('chat-close-btn');
+      const chatLiveToggle = document.getElementById('chat-live-toggle');
+      const chatHideToolsCheckbox = document.getElementById('chat-hide-tools');
+      const chatHideThinkingCheckbox = document.getElementById('chat-hide-thinking');
+      const chatMessagesContainer = document.getElementById('chat-messages');
+      const chatErrorInline = document.getElementById('chat-error-inline');
+      const chatJumpLatestBtn = document.getElementById('chat-jump-latest');
+
+      // Safe localStorage utilities
+      function loadSavedPreferences() {
+        try {
+          const savedRepo = localStorage.getItem('trinity_dash_repo');
+          const savedHide = localStorage.getItem('trinity_dash_hide_finished');
+          if (savedRepo !== null) {
+            currentRepoFilter = savedRepo;
+          }
+          if (savedHide !== null) {
+            hideFinished = savedHide === 'true';
+            hideFinishedCheckbox.checked = hideFinished;
+          }
+
+          const savedHideTools = localStorage.getItem('trinity_dash_hide_tools');
+          if (savedHideTools !== null) {
+            hideChatTools = savedHideTools === 'true';
+            chatHideToolsCheckbox.checked = hideChatTools;
+            if (hideChatTools) chatMessagesContainer.classList.add('hide-tools');
+          }
+
+          const savedHideThinking = localStorage.getItem('trinity_dash_hide_thinking');
+          if (savedHideThinking !== null) {
+            hideChatThinking = savedHideThinking === 'true';
+            chatHideThinkingCheckbox.checked = hideChatThinking;
+            if (hideChatThinking) chatMessagesContainer.classList.add('hide-thinking');
+          }
+        } catch (err) {
+          // localStorage disabled or security exception
+        }
+      }
+
+      function savePreferences() {
+        try {
+          localStorage.setItem('trinity_dash_repo', currentRepoFilter);
+          localStorage.setItem('trinity_dash_hide_finished', hideFinished ? 'true' : 'false');
+          localStorage.setItem('trinity_dash_hide_tools', hideChatTools ? 'true' : 'false');
+          localStorage.setItem('trinity_dash_hide_thinking', hideChatThinking ? 'true' : 'false');
+        } catch (err) {
+          // localStorage disabled or security exception
+        }
+      }
+
+      // Safe DOM element builder (ZERO innerHTML with dynamic data)
+      function el(tag, className, textContent) {
+        const element = document.createElement(tag);
+        if (className) element.className = className;
+        if (textContent !== undefined && textContent !== null) {
+          element.textContent = textContent;
+        }
+        return element;
+      }
+
+      // Format updated timestamp
+      function formatTime(isoOrString) {
+        if (!isoOrString) return '';
+        try {
+          if (isoOrString.includes('T')) {
+            const d = new Date(isoOrString);
+            if (!isNaN(d.getTime())) {
+              return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+            }
+          }
+        } catch (e) {}
+        return isoOrString;
+      }
+
+      // Format clock time (HH:MM)
+      function formatHHMM(isoOrTimestamp) {
+        if (!isoOrTimestamp) return '';
+        try {
+          let d;
+          if (typeof isoOrTimestamp === 'number') {
+            d = new Date(isoOrTimestamp * 1000);
+          } else if (/^\d+$/.test(isoOrTimestamp)) {
+            d = new Date(parseInt(isoOrTimestamp, 10) * 1000);
+          } else {
+            d = new Date(isoOrTimestamp);
+          }
+          if (!isNaN(d.getTime())) {
+            return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+          }
+        } catch (e) {}
+        return String(isoOrTimestamp);
+      }
+
+      // Format relative time (e.g. 12s ago, 3m ago, 2h ago)
+      function formatRelativeTime(isoStr) {
+        if (!isoStr) return '';
+        const d = new Date(isoStr);
+        if (isNaN(d.getTime())) return isoStr;
+        const elapsedSec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+        if (elapsedSec < 60) return elapsedSec + 's ago';
+        if (elapsedSec < 3600) return Math.floor(elapsedSec / 60) + 'm ago';
+        if (elapsedSec < 86400) return Math.floor(elapsedSec / 3600) + 'h ago';
+        return Math.floor(elapsedSec / 86400) + 'd ago';
+      }
+
+      // Format duration seconds nicely
+      function formatDuration(sec) {
+        if (typeof sec !== 'number' || isNaN(sec) || sec < 0) return '0s';
+        const total = Math.floor(sec);
+        const s = total % 60;
+        const m = Math.floor((total % 3600) / 60);
+        const h = Math.floor(total / 3600);
+        if (h > 0) {
+          return h + 'h ' + String(m).padStart(2, '0') + 'm ' + String(s).padStart(2, '0') + 's';
+        }
+        if (m > 0) {
+          return m + 'm ' + String(s).padStart(2, '0') + 's';
+        }
+        return s + 's';
+      }
+
+      // Format token totals (e.g. 26.2k tok, 1.2M tok)
+      function formatTokens(num) {
+        if (typeof num !== 'number' || isNaN(num)) return '';
+        if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M tok';
+        if (num >= 1000) return (num / 1000).toFixed(1) + 'k tok';
+        return num + ' tok';
+      }
+
+      // Format compact numbers (e.g. 61k, 258k, 1M)
+      function formatCompactNum(num) {
+        if (typeof num !== 'number' || isNaN(num)) return '';
+        if (num >= 1000000) {
+          const m = num / 1000000;
+          return (m >= 10 ? Math.round(m) : m.toFixed(1).replace(/\.0$/, '')) + 'M';
+        }
+        if (num >= 1000) {
+          return Math.round(num / 1000) + 'k';
+        }
+        return String(num);
+      }
+
+      // Live-ticking duration updates
+      function tickLiveDurations() {
+        const liveElements = document.querySelectorAll('[data-live-started]');
+        const now = Date.now();
+        liveElements.forEach(function (node) {
+          const startedIso = node.getAttribute('data-live-started');
+          if (startedIso) {
+            const startTime = new Date(startedIso).getTime();
+            if (!isNaN(startTime)) {
+              const elapsedSec = Math.max(0, Math.floor((now - startTime) / 1000));
+              node.textContent = '⏱ ' + formatDuration(elapsedSec);
+            }
+          }
+        });
+      }
+
+      // Update header agent cards: availability, default model, running models, counts
+      function updateAgentHeader(state) {
+        const agentNames = ['claude', 'codex', 'antigravity'];
+        const availability = state.availability || {};
+        const agents = state.agents || {};
+
+        agentNames.forEach(function (name) {
+          const stats = agents[name] || { running: 0, done: 0, failed: 0, total: 0, models: [] };
+          const avail = availability[name] || { available: true, detail: '', model: '', effort: '' };
+
+          // Counts
+          const runEl = document.getElementById(name + '-running');
+          const doneEl = document.getElementById(name + '-done');
+          const failEl = document.getElementById(name + '-failed');
+          const totEl = document.getElementById(name + '-total');
+
+          if (runEl) runEl.textContent = String(stats.running || 0);
+          if (doneEl) doneEl.textContent = String(stats.done || 0);
+          if (failEl) failEl.textContent = String(stats.failed || 0);
+          if (totEl) totEl.textContent = String(stats.total || 0);
+
+          // Availability dot and detail
+          const dot = document.getElementById('avail-dot-' + name);
+          const availText = document.getElementById('avail-text-' + name);
+          const isAvail = avail.available !== false;
+
+          if (dot) {
+            dot.className = 'avail-dot ' + (isAvail ? 'available' : 'unavailable');
+            dot.title = avail.detail ? avail.detail : (isAvail ? 'Available' : 'Unavailable');
+          }
+
+          if (availText) {
+            while (availText.firstChild) availText.removeChild(availText.firstChild);
+            if (!isAvail) {
+              const badge = el('span', 'agent-unavail-badge', 'Unavailable: ' + (avail.detail || 'check config'));
+              availText.appendChild(badge);
+            }
+          }
+
+          // Default model + effort
+          const modelEl = document.getElementById('model-' + name);
+          if (modelEl) {
+            while (modelEl.firstChild) modelEl.removeChild(modelEl.firstChild);
+            const modelText = avail.model ? (avail.model + (avail.effort ? ' · ' + avail.effort : '')) : '-';
+            modelEl.appendChild(document.createTextNode('Default: '));
+            const chip = el('span', 'model-chip', modelText);
+            modelEl.appendChild(chip);
+          }
+
+          // Running models
+          const runningModelsEl = document.getElementById('running-models-' + name);
+          if (runningModelsEl) {
+            while (runningModelsEl.firstChild) runningModelsEl.removeChild(runningModelsEl.firstChild);
+            if (Array.isArray(stats.models) && stats.models.length > 0) {
+              runningModelsEl.appendChild(document.createTextNode('Active: '));
+              stats.models.forEach(function (m) {
+                if (m) {
+                  const mChip = el('span', 'model-chip', m);
+                  runningModelsEl.appendChild(mChip);
+                }
+              });
+            }
+          }
+        });
+      }
+
+      // Synchronize repo filter dropdown
+      function updateRepoFilterOptions(repos) {
+        const existingValues = new Set();
+        for (let i = 0; i < repoFilterSelect.options.length; i++) {
+          existingValues.add(repoFilterSelect.options[i].value);
+        }
+
+        const currentRepos = new Set(['all']);
+        (repos || []).forEach(function (r) {
+          if (r && r.name) {
+            currentRepos.add(r.name);
+            if (!existingValues.has(r.name)) {
+              const opt = el('option', '', r.name);
+              opt.value = r.name;
+              repoFilterSelect.appendChild(opt);
+            }
+          }
+        });
+
+        // Ensure current selection is applied
+        if (currentRepos.has(currentRepoFilter)) {
+          repoFilterSelect.value = currentRepoFilter;
+        } else {
+          currentRepoFilter = 'all';
+          repoFilterSelect.value = 'all';
+        }
+      }
+
+      // Task card component generator
+      function createTaskCard(task) {
+        const taskKey = (task.repoName || '') + '::' + (task.agent || '') + '::' + (task.task || '');
+        const isExpanded = expandedTaskKeys.has(taskKey);
+
+        const card = el('div', 'task-card' + (task.state === 'running' ? ' is-running' : '') + (isExpanded ? ' expanded' : ''));
+        card.setAttribute('role', 'button');
+        card.setAttribute('tabindex', '0');
+        card.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+
+        // Header section of card
+        const cardHeader = el('div', 'task-card-header');
+
+        // Row 1: Task title, repo & badges
+        const titleRow = el('div', 'task-title-row');
+
+        const nameGroup = el('div', 'task-name-group');
+        const chevron = el('span', 'card-toggle-icon', '▶');
+        nameGroup.appendChild(chevron);
+
+        const taskName = el('span', 'task-name', task.task || 'unknown-task');
+        nameGroup.appendChild(taskName);
+
+        if (task.repoName) {
+          const repoPill = el('span', 'repo-pill', task.repoName);
+          nameGroup.appendChild(repoPill);
+        }
+
+        // Only tasks merge can take: finished, on an agent branch, with commits ahead of main.
+        const statusText = (task.status || '').trim().toLowerCase();
+        const mergeable = statusText.startsWith('done') && typeof task.commits === 'number' && task.commits > 0 &&
+          typeof task.branch === 'string' && task.branch.indexOf('agent/') === 0;
+        if (mergeable) {
+          const mergeCmd = 'trinity merge ' + task.task + ' -Yes';
+          const copyBtn = el('button', 'btn-copy', 'Copy merge');
+          copyBtn.type = 'button';
+          copyBtn.title = mergeCmd;
+          copyBtn.setAttribute('aria-label', 'Copy merge command: ' + mergeCmd);
+
+          let resetTimeout = null;
+          function showFeedback(text) {
+            copyBtn.textContent = text;
+            if (resetTimeout) clearTimeout(resetTimeout);
+            resetTimeout = setTimeout(function () {
+              copyBtn.textContent = 'Copy merge';
+              resetTimeout = null;
+            }, 1500);
+          }
+
+          // Clipboard API needs permission (denied in some embedded browsers); execCommand works from a click.
+          function legacyCopy() {
+            const area = document.createElement('textarea');
+            area.value = mergeCmd;
+            area.setAttribute('readonly', '');
+            area.style.position = 'fixed';
+            area.style.opacity = '0';
+            document.body.appendChild(area);
+            area.select();
+            let ok = false;
+            try { ok = document.execCommand('copy'); } catch (err) { ok = false; }
+            document.body.removeChild(area);
+            showFeedback(ok ? 'Copied!' : 'Copy failed');
+          }
+
+          copyBtn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') { legacyCopy(); return; }
+            let pending;
+            try { pending = navigator.clipboard.writeText(mergeCmd); } catch (err) { legacyCopy(); return; }
+            Promise.resolve(pending).then(function () {
+              showFeedback('Copied!');
+            }).catch(legacyCopy);
+          });
+
+          nameGroup.appendChild(copyBtn);
+        }
+        titleRow.appendChild(nameGroup);
+
+        const badgesGroup = el('div', 'badges-group');
+
+        // Model chip on card header
+        if (task.model) {
+          const modelText = task.model + (task.effort ? ' · ' + task.effort : '');
+          const modelChip = el('span', 'model-chip', modelText);
+          badgesGroup.appendChild(modelChip);
+        }
+
+        const stateClass = 'state-' + (task.state || 'other').toLowerCase();
+        const stateBadge = el('span', 'state-badge ' + stateClass, task.state || 'OTHER');
+        badgesGroup.appendChild(stateBadge);
+        titleRow.appendChild(badgesGroup);
+
+        cardHeader.appendChild(titleRow);
+
+        // Row 2: Status text
+        if (task.status) {
+          const statusRow = el('div', 'task-status-row', task.status);
+          cardHeader.appendChild(statusRow);
+        }
+
+        // Row 3: Stats highlight bar (Duration live ticking, tokens, tool calls, last activity)
+        const statsBar = el('div', 'task-stats-bar');
+
+        // Duration: live-ticking for running tasks from started, or durationSec
+        if (task.state === 'running' && task.started) {
+          const durationEl = el('span', 'stat-chip live-tick');
+          durationEl.setAttribute('data-live-started', task.started);
+          const startMs = new Date(task.started).getTime();
+          const initialSec = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+          durationEl.textContent = '⏱ ' + formatDuration(initialSec);
+          statsBar.appendChild(durationEl);
+        } else if (typeof task.durationSec === 'number') {
+          const durationEl = el('span', 'stat-chip', '⏱ ' + formatDuration(task.durationSec));
+          statsBar.appendChild(durationEl);
+        }
+
+        // Token total
+        if (task.tokens && typeof task.tokens.total === 'number') {
+          const tokEl = el('span', 'stat-chip', formatTokens(task.tokens.total));
+          statsBar.appendChild(tokEl);
+        }
+
+        // Context used chip
+        if (typeof task.contextUsed === 'number' && task.contextUsed > 0) {
+          let ctxText = 'ctx ' + formatCompactNum(task.contextUsed);
+          if (typeof task.contextWindow === 'number' && task.contextWindow > 0) {
+            const pct = Math.round((task.contextUsed / task.contextWindow) * 100);
+            ctxText += ' / ' + formatCompactNum(task.contextWindow) + ' (' + pct + '%)';
+          }
+          const ctxEl = el('span', 'stat-chip', ctxText);
+          statsBar.appendChild(ctxEl);
+        }
+
+        // Steps chip
+        if (typeof task.steps === 'number' && task.steps > 0) {
+          const stepText = task.steps === 1 ? '1 step' : task.steps + ' steps';
+          const stepsEl = el('span', 'stat-chip', stepText);
+          statsBar.appendChild(stepsEl);
+        }
+
+        // Tool calls
+        if (typeof task.toolCalls === 'number' && task.toolCalls > 0) {
+          const toolEl = el('span', 'stat-chip', task.toolCalls + ' tools');
+          statsBar.appendChild(toolEl);
+        }
+
+        // Last tool while running
+        if (task.state === 'running' && typeof task.lastTool === 'string' && task.lastTool.trim() !== '') {
+          const lastToolEl = el('span', 'stat-chip last-tool-chip', '> ' + task.lastTool.trim());
+          statsBar.appendChild(lastToolEl);
+        }
+
+        // Last activity
+        if (task.lastActivity) {
+          const actEl = el('span', 'stat-chip', formatRelativeTime(task.lastActivity));
+          statsBar.appendChild(actEl);
+        }
+
+        if (statsBar.childNodes.length > 0) {
+          cardHeader.appendChild(statsBar);
+        }
+
+        // Row 4: Scope if available
+        if (task.scope && task.scope !== '-') {
+          const scopeRow = el('div', 'task-scope-row', 'scope: ' + task.scope);
+          cardHeader.appendChild(scopeRow);
+        }
+
+        // Row 5: Meta row (runner, commits, updated, branch)
+        const metaRow = el('div', 'task-meta-row');
+
+        const metaLeft = el('div', 'meta-left');
+        if (task.runnerAlive) {
+          const runnerBadge = el('span', 'runner-pill alive', '● RUNNER ACTIVE');
+          metaLeft.appendChild(runnerBadge);
+        } else {
+          const runnerBadge = el('span', 'runner-pill idle', 'runner idle');
+          metaLeft.appendChild(runnerBadge);
+        }
+
+        const commitsCount = typeof task.commits === 'number' ? task.commits : 0;
+        const commitsText = commitsCount === 1 ? '1 commit' : commitsCount + ' commits';
+        const commitsEl = el('span', '', commitsText);
+        metaLeft.appendChild(commitsEl);
+
+        if (task.branch && task.branch !== '-') {
+          const branchEl = el('span', '', task.branch);
+          metaLeft.appendChild(branchEl);
+        }
+
+        metaRow.appendChild(metaLeft);
+
+        if (task.updated) {
+          const updatedEl = el('span', '', task.updated);
+          metaRow.appendChild(updatedEl);
+        }
+
+        cardHeader.appendChild(metaRow);
+        card.appendChild(cardHeader);
+
+        // Expandable drawer
+        const drawer = el('div', 'task-card-drawer');
+
+        // Action header with Open Chat button if task has chat
+        if (task.chat) {
+          const actionRow = el('div', 'drawer-label');
+          const titleNote = el('span', '', 'Task Details');
+          actionRow.appendChild(titleNote);
+
+          const openChatBtn = el('button', 'btn-chat primary', '💬 Open chat');
+          openChatBtn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            openChatDrawer(task.chat, {
+              title: task.task || 'Task chat',
+              agent: task.agent || 'antigravity',
+              model: task.model || '',
+              isRunningOrActive: task.state === 'running'
+            });
+          });
+          actionRow.appendChild(openChatBtn);
+          drawer.appendChild(actionRow);
+        }
+
+        // Session ID if present
+        if (task.sessionId) {
+          const sessionRow = el('div', 'task-scope-row', 'Session ID: ' + task.sessionId);
+          drawer.appendChild(sessionRow);
+        }
+
+        // Token breakdown
+        if (task.tokens) {
+          const tokenSection = el('div', 'drawer-section');
+          const tokenLabel = el('div', 'drawer-label', 'Token Usage Breakdown');
+          tokenSection.appendChild(tokenLabel);
+
+          const tokenBox = el('div', 'token-breakdown-box');
+          const row1 = el('div', 'token-breakdown-row');
+          row1.appendChild(el('span', '', 'Total: ' + (task.tokens.total ? task.tokens.total.toLocaleString() : '0')));
+          row1.appendChild(el('span', '', 'Input: ' + (task.tokens.input ? task.tokens.input.toLocaleString() : '0')));
+          row1.appendChild(el('span', '', 'Cached: ' + (task.tokens.cached ? task.tokens.cached.toLocaleString() : '0')));
+          tokenBox.appendChild(row1);
+
+          const row2 = el('div', 'token-breakdown-row');
+          row2.appendChild(el('span', '', 'Output: ' + (task.tokens.output ? task.tokens.output.toLocaleString() : '0')));
+          row2.appendChild(el('span', '', 'Reasoning: ' + (task.tokens.reasoning ? task.tokens.reasoning.toLocaleString() : '0')));
+          if (typeof task.contextUsed === 'number' && task.contextUsed > 0 && task.contextWindow) {
+            row2.appendChild(el('span', '', 'Context: ' + task.contextUsed.toLocaleString() + ' / ' + task.contextWindow.toLocaleString()));
+          } else if (task.contextWindow) {
+            row2.appendChild(el('span', '', 'Context: ' + task.contextWindow.toLocaleString()));
+          } else if (typeof task.contextUsed === 'number' && task.contextUsed > 0) {
+            row2.appendChild(el('span', '', 'Context: ' + task.contextUsed.toLocaleString()));
+          }
+          tokenBox.appendChild(row2);
+          tokenSection.appendChild(tokenBox);
+          drawer.appendChild(tokenSection);
+        }
+
+        // Execution stats line: steps, thinking steps, background tasks when > 0
+        const execItems = [];
+        if (typeof task.steps === 'number' && task.steps > 0) {
+          execItems.push(task.steps === 1 ? '1 step' : task.steps + ' steps');
+        }
+        if (typeof task.thinkingSteps === 'number' && task.thinkingSteps > 0) {
+          execItems.push(task.thinkingSteps === 1 ? '1 thinking step' : task.thinkingSteps + ' thinking steps');
+        }
+        if (typeof task.backgroundTasks === 'number' && task.backgroundTasks > 0) {
+          execItems.push(task.backgroundTasks === 1 ? '1 background task' : task.backgroundTasks + ' background tasks');
+        }
+        if (execItems.length > 0) {
+          const execRow = el('div', 'task-execution-row');
+          execItems.forEach(function (itemText, idx) {
+            if (idx > 0) {
+              execRow.appendChild(el('span', 'exec-sep', ' · '));
+            }
+            execRow.appendChild(el('span', 'exec-item', itemText));
+          });
+          drawer.appendChild(execRow);
+        }
+
+        // Tools breakdown section (horizontal bar list)
+        if (Array.isArray(task.toolBreakdown) && task.toolBreakdown.length > 0) {
+          const validTools = task.toolBreakdown.filter(function (t) {
+            return t && typeof t.name === 'string' && typeof t.count === 'number' && t.count > 0;
+          });
+          if (validTools.length > 0) {
+            const maxCount = Math.max.apply(null, validTools.map(function (t) { return t.count; }));
+            const toolsSection = el('div', 'drawer-section');
+            const toolsLabel = el('div', 'drawer-label', 'Tools');
+            toolsSection.appendChild(toolsLabel);
+
+            const toolList = el('div', 'tool-breakdown-list');
+            validTools.forEach(function (tool) {
+              const row = el('div', 'tool-bar-row');
+              const nameEl = el('span', 'tool-bar-name', tool.name);
+              nameEl.title = tool.name;
+              row.appendChild(nameEl);
+
+              const track = el('div', 'tool-bar-track');
+              const fill = el('div', 'tool-bar-fill');
+              const pct = maxCount > 0 ? Math.min(100, Math.max(0, Math.round((tool.count / maxCount) * 100))) : 0;
+              fill.style.width = pct + '%';
+              track.appendChild(fill);
+              row.appendChild(track);
+
+              const countEl = el('span', 'tool-bar-count', String(tool.count));
+              row.appendChild(countEl);
+
+              toolList.appendChild(row);
+            });
+
+            toolsSection.appendChild(toolList);
+            drawer.appendChild(toolsSection);
+          }
+        }
+
+        // Files touched section
+        if (Array.isArray(task.filesTouched) && task.filesTouched.length > 0) {
+          const validFiles = task.filesTouched.filter(function (f) {
+            return typeof f === 'string' && f.trim() !== '';
+          });
+          if (validFiles.length > 0) {
+            const filesSection = el('div', 'drawer-section');
+            const filesLabel = el('div', 'drawer-label', 'Files touched (' + validFiles.length + (validFiles.length >= 20 ? ', first 20' : '') + ')');
+            filesSection.appendChild(filesLabel);
+
+            const filesBox = el('div', 'files-touched-box');
+            validFiles.forEach(function (filePath) {
+              const fileItem = el('div', 'file-touched-item', filePath);
+              filesBox.appendChild(fileItem);
+            });
+            filesSection.appendChild(filesBox);
+            drawer.appendChild(filesSection);
+          }
+        }
+
+        // Codex Rate Limits
+        if (Array.isArray(task.rateLimits) && task.rateLimits.length > 0) {
+          const rateSection = el('div', 'drawer-section');
+          const rateLabel = el('div', 'drawer-label', 'Rate Limits');
+          rateSection.appendChild(rateLabel);
+
+          task.rateLimits.forEach(function (limit) {
+            const cardLimit = el('div', 'rate-limit-card');
+            const head = el('div', 'rate-limit-head');
+            const nameEl = el('span', '', (limit.name || 'Limit').toUpperCase() + ': ' + (limit.usedPercent || 0) + '%');
+            head.appendChild(nameEl);
+
+            const resetText = limit.resetsAt ? 'resets ' + formatHHMM(limit.resetsAt) : '';
+            const windowText = limit.windowMinutes ? limit.windowMinutes + 'm window' : '';
+            const metaInfo = el('span', '', [windowText, resetText].filter(Boolean).join(' · '));
+            head.appendChild(metaInfo);
+            cardLimit.appendChild(head);
+
+            const track = el('div', 'rate-limit-track');
+            const fill = el('div', 'rate-limit-fill');
+            fill.style.width = Math.min(100, Math.max(0, limit.usedPercent || 0)) + '%';
+            track.appendChild(fill);
+            cardLimit.appendChild(track);
+
+            rateSection.appendChild(cardLimit);
+          });
+
+          drawer.appendChild(rateSection);
+        }
+
+        // Sub-chats
+        if (Array.isArray(task.subChats) && task.subChats.length > 0) {
+          const subSection = el('div', 'drawer-section');
+          const subLabel = el('div', 'drawer-label', 'Sub-chats (' + task.subChats.length + ')');
+          subSection.appendChild(subLabel);
+
+          const subList = el('div', 'subchats-list');
+          task.subChats.forEach(function (sub) {
+            const subRow = el('div', 'subchat-row');
+            const left = el('div', 'meta-left');
+            left.appendChild(el('span', 'task-name', sub.title || 'subchat'));
+            if (sub.model) {
+              left.appendChild(el('span', 'model-chip', sub.model));
+            }
+            subRow.appendChild(left);
+
+            if (sub.chat) {
+              const chatBtn = el('button', 'btn-chat', '💬 Chat');
+              chatBtn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                openChatDrawer(sub.chat, {
+                  title: sub.title || 'Sub-chat',
+                  agent: task.agent || 'codex',
+                  model: sub.model || '',
+                  isRunningOrActive: task.state === 'running'
+                });
+              });
+              subRow.appendChild(chatBtn);
+            }
+            subList.appendChild(subRow);
+          });
+
+          subSection.appendChild(subList);
+          drawer.appendChild(subSection);
+        }
+
+        // Result subsection
+        const resultSection = el('div', 'drawer-section');
+        const resultLabel = el('div', 'drawer-label', 'Agent Summary (result-' + (task.task || 'task') + '.md)');
+        resultSection.appendChild(resultLabel);
+
+        if (task.result && task.result.trim()) {
+          const resultBlock = el('pre', 'mono-block', task.result);
+          resultSection.appendChild(resultBlock);
+        } else {
+          const resultEmpty = el('div', 'mono-empty', '(no result output recorded)');
+          resultSection.appendChild(resultEmpty);
+        }
+        drawer.appendChild(resultSection);
+
+        // Log tail subsection
+        const logSection = el('div', 'drawer-section');
+        const logLabel = el('div', 'drawer-label', 'Log Tail (log-' + (task.task || 'task') + '.txt)');
+        logSection.appendChild(logLabel);
+
+        if (task.logTail && task.logTail.trim()) {
+          const logBlock = el('pre', 'mono-block', task.logTail);
+          logSection.appendChild(logBlock);
+        } else {
+          const logEmpty = el('div', 'mono-empty', '(no log tail recorded)');
+          logSection.appendChild(logEmpty);
+        }
+        drawer.appendChild(logSection);
+
+        card.appendChild(drawer);
+
+        // Click / Key toggle handler
+        function toggleExpand(e) {
+          if (e.target.closest('button') || e.target.closest('pre')) return;
+
+          if (expandedTaskKeys.has(taskKey)) {
+            expandedTaskKeys.delete(taskKey);
+            card.classList.remove('expanded');
+            card.setAttribute('aria-expanded', 'false');
+          } else {
+            expandedTaskKeys.add(taskKey);
+            card.classList.add('expanded');
+            card.setAttribute('aria-expanded', 'true');
+          }
+        }
+
+        card.addEventListener('click', toggleExpand);
+        card.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            toggleExpand(e);
+          }
+        });
+
+        return card;
+      }
+
+      // Claude Session card generator
+      function createClaudeSessionCard(session, repoName) {
+        const card = el('div', 'session-card' + (session.active ? ' is-active' : ''));
+
+        // Header
+        const headerRow = el('div', 'session-header-row');
+        const titleGroup = el('div', 'session-title-group');
+
+        const pulseDot = el('span', 'pulsing-dot' + (session.active ? ' active' : ''));
+        pulseDot.title = session.active ? 'Active session' : 'Inactive session';
+        titleGroup.appendChild(pulseDot);
+
+        const titleText = el('span', 'session-title', session.title || 'Untitled Session');
+        titleGroup.appendChild(titleText);
+
+        if (repoName) {
+          const repoPill = el('span', 'repo-pill', repoName);
+          titleGroup.appendChild(repoPill);
+        }
+        headerRow.appendChild(titleGroup);
+
+        const badgesGroup = el('div', 'badges-group');
+        if (session.model) {
+          const modelText = session.model + (session.effort ? ' · ' + session.effort : '');
+          badgesGroup.appendChild(el('span', 'model-chip', modelText));
+        }
+        if (session.chat) {
+          const chatBtn = el('button', 'btn-chat primary', '💬 Open chat');
+          chatBtn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            openChatDrawer(session.chat, {
+              title: session.title || 'Claude Session',
+              agent: 'claude',
+              model: session.model || '',
+              isRunningOrActive: session.active
+            });
+          });
+          badgesGroup.appendChild(chatBtn);
+        }
+        headerRow.appendChild(badgesGroup);
+        card.appendChild(headerRow);
+
+        // Meta info
+        const metaRow = el('div', 'session-meta-row');
+        const metaLeft = el('div', 'meta-left');
+
+        if (session.branch) {
+          metaLeft.appendChild(el('span', '', 'branch: ' + session.branch));
+        }
+        if (session.task) {
+          metaLeft.appendChild(el('span', '', 'task: ' + session.task));
+        }
+        if (typeof session.contextTokens === 'number') {
+          metaLeft.appendChild(el('span', '', formatTokens(session.contextTokens) + ' ctx'));
+        }
+        metaRow.appendChild(metaLeft);
+
+        if (session.lastActivity) {
+          metaRow.appendChild(el('span', '', formatRelativeTime(session.lastActivity)));
+        }
+        card.appendChild(metaRow);
+
+        // Subagents nested
+        if (Array.isArray(session.subagents) && session.subagents.length > 0) {
+          const subContainer = el('div', 'subagents-container');
+          subContainer.appendChild(el('div', 'subagents-header', 'Nested Subagents (' + session.subagents.length + ')'));
+
+          session.subagents.forEach(function (sub) {
+            const subRow = el('div', 'subagent-item');
+            const info = el('div', 'subagent-info');
+
+            // The collector sets active (unfinished and written in the last 2 minutes); an abandoned subagent never finishes.
+            const isSubRunning = (typeof sub.active === 'boolean') ? sub.active : !sub.finished;
+            const badgeClass = isSubRunning ? 'state-badge state-running' : 'state-badge state-done';
+            info.appendChild(el('span', badgeClass, isSubRunning ? 'RUNNING' : 'FINISHED'));
+
+            info.appendChild(el('span', 'subagent-desc', sub.description || 'subagent'));
+            if (sub.type) {
+              info.appendChild(el('span', 'model-chip', sub.type));
+            }
+            if (sub.model) {
+              info.appendChild(el('span', 'model-chip', sub.model));
+            }
+            if (sub.lastActivity) {
+              info.appendChild(el('span', '', formatRelativeTime(sub.lastActivity)));
+            }
+            subRow.appendChild(info);
+
+            if (sub.chat) {
+              const subChatBtn = el('button', 'btn-chat', '💬 Chat');
+              subChatBtn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                openChatDrawer(sub.chat, {
+                  title: sub.description || 'Claude Subagent',
+                  agent: 'claude',
+                  model: sub.model || '',
+                  isRunningOrActive: isSubRunning
+                });
+              });
+              subRow.appendChild(subChatBtn);
+            }
+
+            subContainer.appendChild(subRow);
+          });
+
+          card.appendChild(subContainer);
+        }
+
+        return card;
+      }
+
+      // Repositories card generator
+      function createRepoCard(repo) {
+        const card = el('div', 'repo-card');
+
+        // Head
+        const head = el('div', 'repo-card-head');
+        const titleGroup = el('div', 'repo-title-group');
+        const nameEl = el('div', 'repo-name', repo.name || 'Untitled Repo');
+        titleGroup.appendChild(nameEl);
+
+        if (repo.path) {
+          const pathEl = el('div', 'repo-path', repo.path);
+          titleGroup.appendChild(pathEl);
+        }
+        head.appendChild(titleGroup);
+
+        const badgesGroup = el('div', 'repo-badges');
+        if (repo.branch) {
+          const branchBadge = el('span', 'repo-badge', 'branch: ' + repo.branch);
+          badgesGroup.appendChild(branchBadge);
+        }
+
+        const uncommitted = typeof repo.uncommitted === 'number' ? repo.uncommitted : 0;
+        const uncommittedBadge = el('span', 'repo-badge' + (uncommitted > 0 ? ' active-alert' : ''), 'uncommitted: ' + uncommitted);
+        badgesGroup.appendChild(uncommittedBadge);
+
+        const ahead = typeof repo.ahead === 'number' ? repo.ahead : 0;
+        const aheadBadge = el('span', 'repo-badge' + (ahead > 0 ? ' active-alert' : ''), 'ahead: ' + ahead);
+        badgesGroup.appendChild(aheadBadge);
+
+        head.appendChild(badgesGroup);
+        card.appendChild(head);
+
+        // PLAN progress section
+        if (repo.plan) {
+          const planBox = el('div', 'progress-box');
+          const planHead = el('div', 'progress-header');
+
+          const doneCount = typeof repo.plan.done === 'number' ? repo.plan.done : 0;
+          const totalCount = typeof repo.plan.total === 'number' ? repo.plan.total : 0;
+          const pct = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 100;
+
+          const planLabel = el('span', 'progress-label', 'PLAN Progress: ' + doneCount + ' / ' + totalCount + ' tasks (' + pct + '%)');
+          planHead.appendChild(planLabel);
+          planBox.appendChild(planHead);
+
+          const track = el('div', 'progress-track');
+          const fill = el('div', 'progress-fill');
+          fill.style.width = Math.min(100, Math.max(0, pct)) + '%';
+          track.appendChild(fill);
+          planBox.appendChild(track);
+
+          if (Array.isArray(repo.plan.open) && repo.plan.open.length > 0) {
+            const openUl = el('ul', 'plan-open-list');
+            repo.plan.open.forEach(function (item) {
+              const li = el('li', '', item);
+              openUl.appendChild(li);
+            });
+            planBox.appendChild(openUl);
+          }
+
+          card.appendChild(planBox);
+        }
+
+        // HANDOFF status section
+        if (Array.isArray(repo.handoff) && repo.handoff.length > 0) {
+          const handoffBox = el('div', 'handoff-box');
+          const handoffTitle = el('div', 'handoff-title', 'HANDOFF Status');
+          handoffBox.appendChild(handoffTitle);
+
+          const handoffUl = el('ul', 'handoff-list');
+          repo.handoff.forEach(function (line) {
+            const li = el('li', '', line);
+            handoffUl.appendChild(li);
+          });
+          handoffBox.appendChild(handoffUl);
+          card.appendChild(handoffBox);
+        }
+
+        return card;
+      }
+
+      // Render full dashboard from state object
+      function renderDashboard(state) {
+        if (!state) return;
+
+        // Header metrics & availability
+        updateAgentHeader(state);
+        updateRepoFilterOptions(state.repos);
+
+        // Collect all tasks & claudeSessions across repositories
+        const allTasksByAgent = {
+          claude: [],
+          codex: [],
+          antigravity: []
+        };
+        const allClaudeSessions = [];
+
+        let visibleCount = 0;
+        let totalCount = 0;
+
+        (state.repos || []).forEach(function (repo) {
+          // Repo filter check
+          const repoMatches = (currentRepoFilter === 'all' || repo.name === currentRepoFilter);
+
+          // Claude sessions
+          if (Array.isArray(repo.claudeSessions)) {
+            repo.claudeSessions.forEach(function (session) {
+              if (repoMatches) {
+                allClaudeSessions.push({
+                  session: session,
+                  repoName: repo.name
+                });
+              }
+            });
+          }
+
+          // Tasks
+          (repo.tasks || []).forEach(function (t) {
+            totalCount++;
+            const agentKey = (t.agent || '').toLowerCase();
+            if (!allTasksByAgent[agentKey]) {
+              allTasksByAgent[agentKey] = [];
+            }
+
+            if (!repoMatches) return;
+
+            // Filter finished tasks (merged & cancelled)
+            if (hideFinished && (t.state === 'merged' || t.state === 'cancelled')) {
+              return;
+            }
+
+            visibleCount++;
+            allTasksByAgent[agentKey].push({
+              ...t,
+              repoName: repo.name,
+              repoPath: repo.path
+            });
+          });
+        });
+
+        // Update filter stats
+        filterStats.textContent = 'Showing ' + visibleCount + ' of ' + totalCount + ' tasks' +
+          (currentRepoFilter !== 'all' ? ' in "' + currentRepoFilter + '"' : '') +
+          (hideFinished ? ' (finished hidden)' : '');
+
+        // Render each agent lane
+        const agentKeys = ['claude', 'codex', 'antigravity'];
+        const availability = state.availability || {};
+
+        agentKeys.forEach(function (key) {
+          const container = laneBodies[key];
+          const countBadge = laneCounts[key];
+          const tasks = allTasksByAgent[key] || [];
+          const avail = availability[key] || { available: true };
+
+          // Clear container safely
+          while (container.firstChild) {
+            container.removeChild(container.firstChild);
+          }
+
+          // 1. Unavailable banner at top of lane if available === false
+          if (avail.available === false) {
+            const detailText = avail.detail || 'unavailable';
+            let routingText = '';
+            if (key === 'codex') {
+              routingText = 'Codex unavailable: ' + detailText + '. New Codex work routes to Antigravity.';
+            } else if (key === 'antigravity') {
+              routingText = 'Antigravity unavailable: ' + detailText + '. New Antigravity work routes to Codex.';
+            } else {
+              routingText = 'Claude unavailable: ' + detailText + '.';
+            }
+            const banner = el('div', 'lane-unavail-banner', '⚠ ' + routingText);
+            container.appendChild(banner);
+          }
+
+          // 2. Claude Lane: "Sessions" group above tracked tasks
+          if (key === 'claude' && allClaudeSessions.length > 0) {
+            const sessionsSection = el('div', 'claude-sessions-group');
+            sessionsSection.appendChild(el('div', 'group-section-title', 'Claude Sessions (' + allClaudeSessions.length + ')'));
+
+            // Sort sessions: active first, then lastActivity descending
+            allClaudeSessions.sort(function (a, b) {
+              const aActive = a.session.active ? 1 : 0;
+              const bActive = b.session.active ? 1 : 0;
+              if (aActive !== bActive) return bActive - aActive;
+              return (b.session.lastActivity || '').localeCompare(a.session.lastActivity || '');
+            });
+
+            allClaudeSessions.forEach(function (item) {
+              sessionsSection.appendChild(createClaudeSessionCard(item.session, item.repoName));
+            });
+
+            container.appendChild(sessionsSection);
+
+            if (tasks.length > 0) {
+              container.appendChild(el('div', 'group-section-title', 'Tracked Tasks (' + tasks.length + ')'));
+            }
+          }
+
+          // 3. Sort tasks: running first, then by updated descending
+          tasks.sort(function (a, b) {
+            const aRunning = a.state === 'running' ? 1 : 0;
+            const bRunning = b.state === 'running' ? 1 : 0;
+            if (aRunning !== bRunning) {
+              return bRunning - aRunning;
+            }
+            const dateA = a.updated || '';
+            const dateB = b.updated || '';
+            return dateB.localeCompare(dateA);
+          });
+
+          countBadge.textContent = tasks.length === 1 ? '1 task' : tasks.length + ' tasks';
+
+          if (tasks.length === 0 && (key !== 'claude' || allClaudeSessions.length === 0)) {
+            const emptyEl = el('div', 'lane-empty', 'No tasks matching filters');
+            container.appendChild(emptyEl);
+          } else {
+            tasks.forEach(function (task) {
+              container.appendChild(createTaskCard(task));
+            });
+          }
+        });
+
+        // Repositories section
+        while (reposContainer.firstChild) {
+          reposContainer.removeChild(reposContainer.firstChild);
+        }
+
+        const repos = state.repos || [];
+        repoCountBadge.textContent = String(repos.length);
+
+        if (repos.length === 0) {
+          const emptyRepo = el('div', 'lane-empty', 'No repositories tracked');
+          reposContainer.appendChild(emptyRepo);
+        } else {
+          repos.forEach(function (repo) {
+            if (currentRepoFilter === 'all' || repo.name === currentRepoFilter) {
+              reposContainer.appendChild(createRepoCard(repo));
+            }
+          });
+        }
+      }
+
+      // ==========================================
+      // Chat Drawer Logic
+      // ==========================================
+
+      function openChatDrawer(chatKey, meta) {
+        if (!chatKey) return;
+        activeChatKey = chatKey;
+        activeChatMeta = meta || {};
+
+        // Update initial header
+        chatTitleEl.textContent = activeChatMeta.title || 'Chat: ' + chatKey;
+        chatAgentBadge.textContent = (activeChatMeta.agent || '').toUpperCase();
+        chatModelBadge.textContent = activeChatMeta.model || '';
+        chatUpdatedTime.textContent = '';
+
+        // Live toggle: default on if source is running or active
+        chatLiveToggle.checked = !!activeChatMeta.isRunningOrActive;
+
+        // Reset scroll state
+        userScrolledUp = false;
+        chatJumpLatestBtn.classList.remove('visible');
+
+        // Show drawer and backdrop
+        chatBackdrop.classList.add('open');
+        chatDrawer.classList.add('open');
+        chatCloseBtn.focus();
+
+        // Clear previous messages and errors
+        while (chatMessagesContainer.firstChild) {
+          chatMessagesContainer.removeChild(chatMessagesContainer.firstChild);
+        }
+        chatErrorInline.classList.remove('active');
+        chatErrorInline.textContent = '';
+
+        // Initial fetch
+        fetchChatData(chatKey);
+
+        // Start live polling if toggle checked
+        syncChatPolling();
+      }
+
+      function closeChatDrawer() {
+        chatDrawer.classList.remove('open');
+        chatBackdrop.classList.remove('open');
+        activeChatKey = null;
+        activeChatMeta = null;
+        stopChatPolling();
+      }
+
+      function syncChatPolling() {
+        stopChatPolling();
+        if (activeChatKey && chatLiveToggle.checked) {
+          chatPollTimer = setInterval(function () {
+            if (activeChatKey) {
+              fetchChatData(activeChatKey, true);
+            }
+          }, 3000);
+        }
+      }
+
+      function stopChatPolling() {
+        if (chatPollTimer) {
+          clearInterval(chatPollTimer);
+          chatPollTimer = null;
+        }
+      }
+
+      // Fetch or read chat data
+      async function fetchChatData(chatKey, isBackgroundPoll) {
+        if (!chatKey) return;
+        const requestSeq = ++chatRequestSeq;
+
+        try {
+          let chatData = null;
+
+          if (isSample) {
+            if (lastStateData && lastStateData.sampleChats && lastStateData.sampleChats[chatKey]) {
+              chatData = lastStateData.sampleChats[chatKey];
+            } else {
+              throw new Error('Chat "' + chatKey + '" not found in sampleChats');
+            }
+          } else {
+            const res = await fetch('/api/chat?id=' + encodeURIComponent(chatKey) + '&_t=' + Date.now(), {
+              cache: 'no-store'
+            });
+            if (!res.ok) {
+              throw new Error('HTTP ' + res.status + ' ' + res.statusText);
+            }
+            chatData = await res.json();
+          }
+
+          // A slower response for an older request (or a closed/switched drawer) must not overwrite the current chat.
+          if (requestSeq !== chatRequestSeq || chatKey !== activeChatKey) return;
+          chatErrorInline.classList.remove('active');
+          chatErrorInline.textContent = '';
+          renderChatMessages(chatData);
+        } catch (err) {
+          if (requestSeq !== chatRequestSeq || chatKey !== activeChatKey) return;
+          chatErrorInline.classList.add('active');
+          chatErrorInline.textContent = 'Error loading chat: ' + err.message;
+        }
+      }
+
+      // Render messages in chat drawer
+      function renderChatMessages(chatData) {
+        if (!chatData) return;
+
+        if (chatData.title) chatTitleEl.textContent = chatData.title;
+        if (chatData.agent) chatAgentBadge.textContent = chatData.agent.toUpperCase();
+        if (chatData.model) chatModelBadge.textContent = chatData.model;
+        if (chatData.updated) chatUpdatedTime.textContent = 'Updated ' + formatTime(chatData.updated);
+
+        // Check scroll position before re-rendering
+        const isNearBottom = (chatMessagesContainer.scrollHeight - chatMessagesContainer.scrollTop - chatMessagesContainer.clientHeight) < 60;
+        const previousScrollTop = chatMessagesContainer.scrollTop;
+
+        // Clear container safely
+        while (chatMessagesContainer.firstChild) {
+          chatMessagesContainer.removeChild(chatMessagesContainer.firstChild);
+        }
+
+        const messages = Array.isArray(chatData.messages) ? chatData.messages : [];
+        if (messages.length === 0) {
+          const emptyMsg = el('div', 'lane-empty', 'No messages in this chat');
+          chatMessagesContainer.appendChild(emptyMsg);
+          return;
+        }
+
+        messages.forEach(function (msg, idx) {
+          const role = (msg.role || 'assistant').toLowerCase();
+          const msgEl = el('div', 'chat-msg role-' + role);
+
+          // Header
+          const header = el('div', 'chat-msg-header');
+          let roleLabel = role;
+          if (role === 'tool') {
+            roleLabel = 'TOOL' + (msg.name ? ': ' + msg.name : '');
+          } else if (role === 'result') {
+            roleLabel = 'TOOL RESULT';
+          }
+          header.appendChild(el('span', 'chat-msg-role', roleLabel));
+
+          if (msg.at) {
+            header.appendChild(el('span', 'chat-msg-time', formatTime(msg.at)));
+          }
+          msgEl.appendChild(header);
+
+          // Body per role
+          if (role === 'tool' || role === 'result') {
+            const coll = el('div', 'msg-collapsible');
+            const preview = el('pre', 'msg-content-preview collapsed', msg.text || '');
+            coll.appendChild(preview);
+
+            const toggleBtn = el('button', 'btn-toggle-expand', 'Expand');
+            toggleBtn.addEventListener('click', function () {
+              if (preview.classList.contains('collapsed')) {
+                preview.classList.remove('collapsed');
+                toggleBtn.textContent = 'Collapse';
+              } else {
+                preview.classList.add('collapsed');
+                toggleBtn.textContent = 'Expand';
+              }
+            });
+            coll.appendChild(toggleBtn);
+            msgEl.appendChild(coll);
+          } else if (role === 'thinking') {
+            const coll = el('div', 'msg-collapsible');
+            const preview = el('div', 'msg-content-preview collapsed', msg.text || '');
+            coll.appendChild(preview);
+
+            const toggleBtn = el('button', 'btn-toggle-expand', 'Expand thinking');
+            toggleBtn.addEventListener('click', function () {
+              if (preview.classList.contains('collapsed')) {
+                preview.classList.remove('collapsed');
+                toggleBtn.textContent = 'Collapse thinking';
+              } else {
+                preview.classList.add('collapsed');
+                toggleBtn.textContent = 'Expand thinking';
+              }
+            });
+            coll.appendChild(toggleBtn);
+            msgEl.appendChild(coll);
+          } else {
+            // user, assistant, system
+            const textEl = el('div', '', msg.text || '');
+            textEl.style.whiteSpace = 'pre-wrap';
+            msgEl.appendChild(textEl);
+          }
+
+          chatMessagesContainer.appendChild(msgEl);
+        });
+
+        // Stick to bottom unless user scrolled up
+        if (isNearBottom && !userScrolledUp) {
+          chatMessagesContainer.scrollTop = chatMessagesContainer.scrollHeight;
+          chatJumpLatestBtn.classList.remove('visible');
+        } else {
+          // Rebuilding the list resets scrollTop; keep the reader where they were.
+          chatMessagesContainer.scrollTop = previousScrollTop;
+          chatJumpLatestBtn.classList.add('visible');
+        }
+      }
+
+      // Chat drawer scroll listener
+      chatMessagesContainer.addEventListener('scroll', function () {
+        const isNearBottom = (chatMessagesContainer.scrollHeight - chatMessagesContainer.scrollTop - chatMessagesContainer.clientHeight) < 60;
+        userScrolledUp = !isNearBottom;
+        if (isNearBottom) {
+          chatJumpLatestBtn.classList.remove('visible');
+        } else {
+          chatJumpLatestBtn.classList.add('visible');
+        }
+      });
+
+      // Jump to latest button
+      chatJumpLatestBtn.addEventListener('click', function () {
+        chatMessagesContainer.scrollTo({
+          top: chatMessagesContainer.scrollHeight,
+          behavior: 'smooth'
+        });
+        userScrolledUp = false;
+        chatJumpLatestBtn.classList.remove('visible');
+      });
+
+      // Chat drawer controls
+      chatCloseBtn.addEventListener('click', closeChatDrawer);
+      chatBackdrop.addEventListener('click', closeChatDrawer);
+
+      window.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && chatDrawer.classList.contains('open')) {
+          closeChatDrawer();
+        }
+      });
+
+      chatLiveToggle.addEventListener('change', syncChatPolling);
+
+      chatHideToolsCheckbox.addEventListener('change', function () {
+        hideChatTools = chatHideToolsCheckbox.checked;
+        if (hideChatTools) {
+          chatMessagesContainer.classList.add('hide-tools');
+        } else {
+          chatMessagesContainer.classList.remove('hide-tools');
+        }
+        savePreferences();
+      });
+
+      chatHideThinkingCheckbox.addEventListener('change', function () {
+        hideChatThinking = chatHideThinkingCheckbox.checked;
+        if (hideChatThinking) {
+          chatMessagesContainer.classList.add('hide-thinking');
+        } else {
+          chatMessagesContainer.classList.remove('hide-thinking');
+        }
+        savePreferences();
+      });
+
+      // ==========================================
+      // Polling & Initialization
+      // ==========================================
+
+      // Fetch state from server or sample file
+      async function pollState() {
+        try {
+          const response = await fetch(stateUrl + (stateUrl.includes('?') ? '&' : '?') + '_t=' + Date.now(), {
+            cache: 'no-store'
+          });
+
+          if (!response.ok) {
+            throw new Error('HTTP ' + response.status + ' ' + response.statusText);
+          }
+
+          const data = await response.json();
+          lastStateData = data;
+
+          // Update UI for online state
+          offlineAlert.classList.remove('active');
+          liveIndicator.className = 'indicator-pill live';
+          liveText.textContent = isSample ? 'SAMPLE DATA' : 'LIVE';
+
+          const timeStr = data.generated ? formatTime(data.generated) : new Date().toLocaleTimeString();
+          refreshTime.textContent = 'Updated ' + timeStr;
+
+          renderDashboard(data);
+        } catch (err) {
+          // Fetch failed: show offline alert, keep last state
+          liveIndicator.className = 'indicator-pill offline';
+          liveText.textContent = 'OFFLINE';
+          refreshTime.textContent = 'Connection error';
+
+          offlineAlert.classList.add('active');
+          offlineAlertTime.textContent = new Date().toLocaleTimeString();
+
+          if (lastStateData) {
+            renderDashboard(lastStateData);
+          }
+        }
+      }
+
+      // Filter events
+      repoFilterSelect.addEventListener('change', function () {
+        currentRepoFilter = repoFilterSelect.value;
+        savePreferences();
+        if (lastStateData) {
+          renderDashboard(lastStateData);
+        }
+      });
+
+      hideFinishedCheckbox.addEventListener('change', function () {
+        hideFinished = hideFinishedCheckbox.checked;
+        savePreferences();
+        if (lastStateData) {
+          renderDashboard(lastStateData);
+        }
+      });
+
+      // Initialization
+      loadSavedPreferences();
+      pollState();
+      setInterval(pollState, 3000);
+      setInterval(tickLiveDurations, 1000);
+    })();
+  </script>
+</body>
+</html>
