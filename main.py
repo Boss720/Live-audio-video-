@@ -29,6 +29,8 @@ from settings import (
 
 DEFAULT_MODEL = "gemini-3.8-live"
 DEFAULT_VOICE = "Puck"
+# Console twin of the windowed installed exe (packaging/gemini-live-agent.spec).
+CLI_EXE_NAME = "gemini-live-agent-cli.exe"
 
 
 def parse_args() -> argparse.Namespace:
@@ -106,6 +108,19 @@ Examples:
     )
 
     return parser.parse_args()
+
+
+def _show_error(message: str) -> None:
+    """Report an error on stderr, or in a message box when there is no console.
+
+    The installed GUI exe is windowed, so sys.stderr is None there.
+    """
+    if sys.stderr is not None:
+        print(message, file=sys.stderr)
+    elif sys.platform == "win32":
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(None, message, "Gemini Live Agent", 0x10)
 
 
 def _prompt_for_api_key() -> None:
@@ -188,6 +203,12 @@ def _with_tier_keys(settings: AppSettings) -> AppSettings:
 def main() -> int:
     """Parse args, build settings, ensure an API key, and run the agent."""
     args = parse_args()
+    if args.headless and sys.stdin is None:
+        _show_error(
+            "Terminal mode needs a console window. Run "
+            f"{CLI_EXE_NAME} --headless (installed app) or python main.py --headless."
+        )
+        return 2
 
     migrate_dotenv()
     has_tier1 = get_api_key() is not None
@@ -234,6 +255,5 @@ if __name__ == "__main__":
     except Exception:
         import traceback
 
-        print("\n[ERROR] Fatal error occurred:")
-        traceback.print_exc()
+        _show_error("[ERROR] Fatal error occurred:\n" + traceback.format_exc())
         sys.exit(1)

@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from main import _guard_frozen_workspace, _resolve_working_dir
 from settings.settings import AppSettings
 
@@ -127,6 +129,42 @@ def test_first_start_keeps_guarded_share_off_defaults(monkeypatch: Any) -> None:
     assert not loaded.yolo
     assert not loaded.share_screen
     assert not loaded.headless
+
+
+def test_headless_without_console_points_to_cli_exe(monkeypatch: Any) -> None:
+    """The windowed installed exe has no stdin: --headless must not start."""
+    import main
+
+    shown: list[str] = []
+    monkeypatch.setattr(sys, "argv", ["main.py", "--headless"])
+    monkeypatch.setattr(sys, "stdin", None)
+    monkeypatch.setattr(main, "_show_error", shown.append)
+    monkeypatch.setattr(main, "run_headless", lambda settings: pytest.fail("ran headless"))
+    monkeypatch.setattr(main, "_prompt_for_api_key", lambda: pytest.fail("prompted"))
+    assert main.main() == 2
+    assert main.CLI_EXE_NAME in shown[0]
+
+
+def test_show_error_uses_stderr_when_present(capsys: pytest.CaptureFixture[str]) -> None:
+    from main import _show_error
+
+    _show_error("boom")
+    assert capsys.readouterr().err == "boom\n"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+def test_show_error_uses_message_box_without_console(monkeypatch: Any) -> None:
+    import ctypes
+
+    from main import _show_error
+
+    boxes: list[tuple[object, str, str, int]] = []
+    monkeypatch.setattr(sys, "stderr", None)
+    monkeypatch.setattr(
+        ctypes.windll.user32, "MessageBoxW", lambda *a: boxes.append(a) or 1
+    )
+    _show_error("boom")
+    assert boxes == [(None, "boom", "Gemini Live Agent", 0x10)]
 
 
 def test_negative_flags_override_saved_approval_and_share_preferences(

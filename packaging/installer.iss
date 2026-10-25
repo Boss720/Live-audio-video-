@@ -12,6 +12,8 @@
 #define AppName "Gemini Live Agent"
 #define AppVersion "0.3.0"
 #define AppExeName "gemini-live-agent.exe"
+; Console twin for terminal mode; the main exe is windowed (no console).
+#define CliExeName "gemini-live-agent-cli.exe"
 #define BundleDir "..\dist\gemini-live-agent"
 
 [Setup]
@@ -39,11 +41,12 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 Source: "{#BundleDir}\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BundleDir}\{#CliExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BundleDir}\_internal\*"; DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Parameters: "--no-headless"
-Name: "{group}\{#AppName} (terminal)"; Filename: "{app}\{#AppExeName}"; Parameters: "--headless"
+Name: "{group}\{#AppName} (terminal)"; Filename: "{app}\{#CliExeName}"; Parameters: "--headless"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Parameters: "--no-headless"; Tasks: desktopicon
 

@@ -104,6 +104,8 @@ a.binaries = [
 
 pyz = PYZ(a.pure)
 
+# GUI exe: windowed, so no console window opens behind the app. sys.stdout and
+# sys.stderr are None in it; main.py reports fatal errors in a message box.
 exe = EXE(
     pyz,
     a.scripts,
@@ -114,7 +116,22 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    # Keep a console so --headless mode, --help, and tracebacks stay usable.
+    console=False,
+    icon=os.path.join(SPECPATH, "icon.ico"),
+    version=os.path.join(SPECPATH, "version.txt"),
+)
+
+# Console twin sharing the same _internal: --headless, --help, and tracebacks.
+cli_exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name="gemini-live-agent-cli",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
     console=True,
     icon=os.path.join(SPECPATH, "icon.ico"),
     version=os.path.join(SPECPATH, "version.txt"),
@@ -122,6 +139,7 @@ exe = EXE(
 
 coll = COLLECT(
     exe,
+    cli_exe,
     a.binaries,
     a.datas,
     strip=False,

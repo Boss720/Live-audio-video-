@@ -98,7 +98,17 @@
   powershell/taskkill with CREATE_NO_WINDOW (no console flash per command under pythonw);
   `obs/logging_setup.py` skips the stderr handler when `sys.stderr` is None. Verified: test instance
   via pythonw has no conhost; run_command under pythonw returns output with a hidden console.
-  The installed build (`packaging/gemini-live-agent.spec`) is still `console=True`.
+- Installed build now windowed: the spec builds two exes into one bundle sharing `_internal`:
+  `gemini-live-agent.exe` (console=False, GUI) and `gemini-live-agent-cli.exe` (console, for
+  `--headless`, `--help`, tracebacks). installer.iss ships both; the "(terminal)" shortcut uses the
+  CLI exe. main.py: `--headless` without stdin shows a message box naming the CLI exe (exit 2);
+  fatal errors go to stderr or a message box. Built 25 Oct 20:35: `dist\installer\
+  gemini-live-agent-setup-0.3.0.exe` (65.7 MB, version not bumped). Previous build kept as
+  `dist\gemini-live-agent-2026-10-23` and `setup-0.3.0-2026-10-23.exe`. Verified from dist: GUI exe
+  opens with no console, CLI `--help` prints, GUI exe `--headless` shows the message box. Not yet
+  installed (needs admin). Build with `python -m PyInstaller` (the venv's `pyinstaller.exe` launcher
+  is stale: "uv trampoline failed to canonicalize script path"); set TEMP/TMP and
+  PYINSTALLER_CONFIG_DIR to `build\` while C: is under 3 GB free.
 - NEXT: live voice session: Esc mid-reply, pill Stop/Hold/approvals, frame quality at 1568 px for
   click accuracy.
 
