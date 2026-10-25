@@ -63,6 +63,16 @@ headless EOF in voice mode, wake-word false positives in real ASR.
   - [x] W4.6 integrate into `app/main_window.py` (Ctrl+, opens settings), GUI tests green
   - Result: commits `cb3c5b4` `d6656ef` `cb37d7c` `68bd53b` `291e0c8` (components) + `8f816e6` (wiring).
     624 passed, 3 skipped; ruff and mypy clean. GUI launched; Settings, Diagnostics, risky box checked by eye.
+- [x] W4.7 `DisconnectReason` emitted as an event (`7a63330`); Reconnects tile counts real drops.
+- [x] W4.8 Mock B companion pill (`80220ad`) + mini mode wiring (`fbeb15b`, Ctrl+Shift+M). Unit tests only.
+
+### Wave 5 — interrupt, frame budget, wake review, pill polish (spec: `docs/wave5.md`)
+- [x] W5.1 `Interrupt` command, Esc / "Stop talking" (`409b086`). Fake-socket tests; not checked live.
+- [ ] W5.2 frame byte budget in `media/screen.py` (Codex), then wire `max_bytes` in `core/session.py`.
+- [x] W5.3 `scripts/wake_review.py` (`b2a6693`). First run on agent.log: 7 gated near misses, most
+  "Roy" for "Leroy" (false negatives), 0 fuzzy addressed.
+- [ ] W5.4 pill polish: border, "Stop talking" button, Esc (Antigravity), then wire
+  `interrupt_requested` in `app/main_window.py`.
 
 ---
 

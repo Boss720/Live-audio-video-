@@ -74,8 +74,16 @@
     loop. Barge-in flush fires on every gated utterance. GUI closed after the session.
   - Not yet checked live: barge-in on speakers (expected disabled), wake-word false positives, click
     accuracy at 1568 px, headless EOF, GoAway resume, late-ASR wake wait (M3).
-- NEXT: live session checks (M3, Wave 2, Wave 3 items in PLAN.md) using the new diagnostics page, then
-  emit DisconnectReason as an event, then Mock B / Wave 5.
+- 25 Oct 2026: DisconnectReason emitted (`7a63330`), companion pill + mini mode (`80220ad`, `fbeb15b`).
+- Wave 5 (spec `docs/wave5.md`, tracked in PLAN.md). Trinity toolkit installed (`95ae87a`): Codex and
+  Antigravity run as workers. Caveats: `trinity dispatch` defaults `-Base main` (initial commit here), so
+  always pass `-Base Leroy`; `trinity merge` refuses unless the main checkout is on `main`, so worker
+  branches are cherry-picked onto Leroy after review + full tests. AGENTS.md has the project commands.
+  - W5.1 Interrupt `409b086`: Esc flushes playback and drops the rest of the current reply (also before
+    its first audio). Codex review caught the early-Esc gap; fixed and tested.
+  - W5.3 wake_review `b2a6693`: `python scripts/wake_review.py --last`. Found "Roy" heard for "Leroy"
+    on gated turns. Cheapest fix: add "Roy" to wake_word_aliases (user setting, not changed).
+- NEXT: finish W5.2 + W5.4, then a live GUI check of Esc interrupt and the pill.
 
 ## Previous handoff — 24 October 2026 (historical)
 
