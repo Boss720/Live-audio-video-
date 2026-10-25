@@ -36,7 +36,7 @@ from core.tier_manager import TierConfig, TierManager
 from core.turn_state import TurnState
 from media import devices
 from media.microphone import Microphone
-from media.screen import ScreenCapture
+from media.screen import DEFAULT_MAX_BYTES, ScreenCapture
 from media.speaker import Speaker
 from obs.logging_setup import get_logger
 from persist.store import Store
@@ -488,6 +488,7 @@ class Supervisor:
                 fps=self._settings.screen_fps,
                 monitor=self._settings.screen_monitor,
                 computer_use=self._settings.computer_use_enabled,
+                max_bytes=DEFAULT_MAX_BYTES,
             )
             await self._screen.start()
 

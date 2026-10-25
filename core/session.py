@@ -56,7 +56,12 @@ from core.turn_state import TurnState
 from core.wake_word import contains_wake_word
 from media import devices
 from media.microphone import INPUT_SAMPLE_RATE, Microphone
-from media.screen import ScreenCapture, capture_jpeg, validate_monitor
+from media.screen import (
+    DEFAULT_MAX_BYTES,
+    ScreenCapture,
+    capture_jpeg,
+    validate_monitor,
+)
 from media.speaker import Speaker
 from obs.logging_setup import get_logger
 from obs.metrics import RuntimeMetrics
@@ -644,6 +649,7 @@ class LiveSession:
                     fps=self._settings.screen_fps,
                     monitor=self._settings.screen_monitor,
                     computer_use=self._settings.computer_use_enabled,
+                    max_bytes=DEFAULT_MAX_BYTES,
                 )
                 await self._screen.start()
 
@@ -1427,6 +1433,7 @@ class LiveSession:
                                 fps=self._settings.screen_fps,
                                 monitor=self._screen_monitor,
                                 computer_use=self._settings.computer_use_enabled,
+                                max_bytes=DEFAULT_MAX_BYTES,
                             )
                             self._owns_screen = True
                             await self._screen.start()
@@ -1668,6 +1675,7 @@ class LiveSession:
                     self._screen_monitor,
                     prev_digest=None if force else self._last_frame_digest,
                     computer_use=self._settings.computer_use_enabled,
+                    max_bytes=DEFAULT_MAX_BYTES,
                 )
             if getattr(frame, "unchanged", False):
                 self._metrics.increment("frame_duplicates_dropped")

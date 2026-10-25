@@ -39,6 +39,9 @@ DEFAULT_FPS = 1.0
 DEFAULT_MAX_WIDTH = 1280  # downscale wider screens to this before encoding
 COMPUTER_USE_MAX_WIDTH = 1568
 DEFAULT_QUALITY = 82  # JPEG quality
+DEFAULT_MAX_BYTES = 200_000
+MIN_QUALITY = 50
+QUALITY_STEP = 10
 JPEG_SUBSAMPLING = 0  # 4:4:4 - no chroma smear on thin coloured text
 _THUMB_SIZE = (64, 36)
 _THUMB_SHIFT = 3  # keep the top 5 bits of gray so tiny noise does not flip the hash
@@ -53,12 +56,19 @@ class JpegFrame(bytes):
 
     pixel_digest: bytes | None = None
     unchanged: bool = False
+    quality: int
 
 
-def _make_frame(data: bytes, digest: bytes | None, unchanged: bool = False) -> JpegFrame:
+def _make_frame(
+    data: bytes,
+    digest: bytes | None,
+    unchanged: bool = False,
+    quality: int = DEFAULT_QUALITY,
+) -> JpegFrame:
     frame = JpegFrame(data)
     frame.pixel_digest = digest
     frame.unchanged = unchanged
+    frame.quality = quality
     return frame
 
 
@@ -114,6 +124,7 @@ def _encode(
     max_width: int,
     quality: int,
     prev_digest: bytes | None = None,
+    max_bytes: int | None = None,
 ) -> JpegFrame:
     """Digest the raw pixels, then (unless unchanged) mark cursor, scale, encode."""
     from PIL import Image
@@ -126,7 +137,7 @@ def _encode(
         bucket = f"{cursor[0] >> 4},{cursor[1] >> 4}".encode()
         digest = hashlib.blake2b(digest + bucket, digest_size=16).digest()
     if prev_digest is not None and digest == prev_digest:
-        return _make_frame(b"", digest, unchanged=True)
+        return _make_frame(b"", digest, unchanged=True, quality=quality)
     scale = image.width / max_width if image.width > max_width else 1.0
     _draw_cursor(image, region, scale)
     if image.width > max_width:
@@ -134,11 +145,15 @@ def _encode(
         image = image.resize(
             (max_width, height), Image.LANCZOS  # type: ignore[attr-defined]
         )
-    buffer = io.BytesIO()
-    image.save(
-        buffer, format="JPEG", quality=quality, subsampling=JPEG_SUBSAMPLING
-    )
-    return _make_frame(buffer.getvalue(), digest)
+    while True:
+        buffer = io.BytesIO()
+        image.save(
+            buffer, format="JPEG", quality=quality, subsampling=JPEG_SUBSAMPLING
+        )
+        data = buffer.getvalue()
+        if max_bytes is None or len(data) <= max_bytes or quality <= MIN_QUALITY:
+            return _make_frame(data, digest, quality=quality)
+        quality = max(MIN_QUALITY, quality - QUALITY_STEP)
 
 
 def _resolve_monitor(sct: Any, monitor: int) -> dict[str, Any]:
@@ -197,6 +212,7 @@ class _OnDemandGrabber:
         max_width: int,
         quality: int,
         prev_digest: bytes | None,
+        max_bytes: int | None = None,
     ) -> JpegFrame:
         from PIL import Image
 
@@ -214,7 +230,7 @@ class _OnDemandGrabber:
                 if attempt:
                     raise
         image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-        return _encode(image, region, max_width, quality, prev_digest)
+        return _encode(image, region, max_width, quality, prev_digest, max_bytes)
 
     def _close_sct(self) -> None:
         sct, self._sct = self._sct, None
@@ -228,9 +244,10 @@ class _OnDemandGrabber:
         max_width: int,
         quality: int,
         prev_digest: bytes | None,
+        max_bytes: int | None = None,
     ) -> JpegFrame:
         return self._pool.submit(
-            self._grab, monitor, max_width, quality, prev_digest
+            self._grab, monitor, max_width, quality, prev_digest, max_bytes
         ).result()
 
     def shutdown(self) -> None:
@@ -262,6 +279,7 @@ def capture_jpeg(
     *,
     prev_digest: bytes | None = None,
     computer_use: bool = False,
+    max_bytes: int | None = None,
 ) -> JpegFrame:
     """Grab a single frame as JPEG bytes, outside the streaming thread.
 
@@ -278,7 +296,7 @@ def capture_jpeg(
         if _grabber is None:
             _grabber = _OnDemandGrabber()
         grabber = _grabber
-    return grabber.grab(monitor, max_width, quality, prev_digest)
+    return grabber.grab(monitor, max_width, quality, prev_digest, max_bytes)
 
 
 class ScreenCapture:
@@ -296,6 +314,8 @@ class ScreenCapture:
         max_width: int | None = None,
         quality: int = DEFAULT_QUALITY,
         computer_use: bool = False,
+        *,
+        max_bytes: int | None = None,
     ) -> None:
         self.fps = fps
         self.monitor = monitor
@@ -303,6 +323,7 @@ class ScreenCapture:
             max_width = COMPUTER_USE_MAX_WIDTH if computer_use else DEFAULT_MAX_WIDTH
         self.max_width = max_width
         self.quality = quality
+        self.max_bytes = max_bytes
         self._queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=1)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -400,7 +421,13 @@ class ScreenCapture:
                         "RGB", shot.size, shot.bgra, "raw", "BGRX"
                     )
 
-                    frame = _encode(image, region, self.max_width, self.quality)
+                    frame = _encode(
+                        image,
+                        region,
+                        self.max_width,
+                        self.quality,
+                        max_bytes=self.max_bytes,
+                    )
                     if self.monitor == selected_monitor:
                         self._publish(frame)
                 except Exception as exc:
