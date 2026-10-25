@@ -56,6 +56,7 @@ async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
             await asyncio.wait_for(killer.wait(), timeout=_REAP_TIMEOUT_SECONDS)
     else:
@@ -102,7 +103,9 @@ async def run_command(args: RunCommandArgs, *, call_id: str = "") -> ToolResult:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                # No window: under pythonw (no console to inherit) each command
+                # would otherwise flash its own console window.
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
             )
         else:
             proc = await asyncio.create_subprocess_shell(

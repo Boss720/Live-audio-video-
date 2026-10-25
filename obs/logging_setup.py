@@ -149,11 +149,13 @@ def setup_logging(run_id: str | None = None, debug: bool = False) -> logging.Log
     file_handler.setFormatter(_JSONFormatter(run_id=_RUN_ID))
     root_logger.addHandler(file_handler)
 
-    console_handler = logging.StreamHandler(sys.stderr)
-    console_handler.setLevel(logging.DEBUG if debug else logging.INFO)
-    console_handler.setFormatter(
-        logging.Formatter("%(levelname)s %(name)s: %(message)s")
-    )
-    root_logger.addHandler(console_handler)
+    # pythonw has no console: sys.stderr is None and every record would fail.
+    if sys.stderr is not None:
+        console_handler = logging.StreamHandler(sys.stderr)
+        console_handler.setLevel(logging.DEBUG if debug else logging.INFO)
+        console_handler.setFormatter(
+            logging.Formatter("%(levelname)s %(name)s: %(message)s")
+        )
+        root_logger.addHandler(console_handler)
 
     return root_logger

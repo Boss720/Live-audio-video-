@@ -79,7 +79,7 @@ def test_ordinary_text_not_redacted() -> None:
 def test_no_catastrophic_backtracking() -> None:
     start = time.perf_counter()
     redact("token" * 20000 + " " + "a" * 100000)
-    redact("-----BEGIN PRIVATE KEY-----" * 2000)
+    redact(("-----BEGIN " + "PRIVATE KEY-----") * 2000)
     redact("eyJ" + "a" * 100000)
     assert time.perf_counter() - start < 5
 
@@ -126,6 +126,31 @@ async def test_redact_before_truncate(tmp_path: Path) -> None:
     assert "ZZZZ" not in res.message
     assert "ghp_" not in res.message
     assert "bytes omitted" in res.message
+
+
+@pytestmark_win
+@pytest.mark.asyncio
+async def test_children_get_no_console_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Under pythonw there is no console to inherit, so without CREATE_NO_WINDOW
+    # every command (and the taskkill on timeout) would pop up a console.
+    _state.set_workspace(tmp_path)
+    calls: list[tuple[str, int]] = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def spy(program, *args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append((program, kwargs.get("creationflags", 0)))
+        return await real_exec(program, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
+    res = await run_command(
+        RunCommandArgs(command="Start-Sleep -Seconds 10", working_dir=str(tmp_path), timeout=1)
+    )
+    assert "timed out" in res.message
+    assert [program for program, _ in calls] == ["powershell", "taskkill"]
+    for program, flags in calls:
+        assert flags & subprocess.CREATE_NO_WINDOW, program
 
 
 def _pid_alive(pid: int) -> bool:

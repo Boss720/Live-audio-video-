@@ -2,8 +2,13 @@
 
 import json
 import logging
+import logging.handlers
+import sys
 from pathlib import Path
 
+import pytest
+
+import obs.logging_setup
 from obs.logging_setup import _JSONFormatter, get_logger, get_run_id, setup_logging
 
 
@@ -59,3 +64,19 @@ def test_setup_logging_writes_json(tmp_path: Path) -> None:
     payload = json.loads(lines[0])
     assert payload["message"] == "smoke test"
     assert payload["extra_key"] == "extra_value"
+
+
+def test_setup_logging_without_stderr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Under pythonw (sys.stderr is None) only the file handler is installed."""
+    monkeypatch.setattr(obs.logging_setup, "_log_directory", lambda: tmp_path)
+    monkeypatch.setattr(sys, "stderr", None)
+    logger = setup_logging(run_id="no-stderr", debug=False)
+    try:
+        assert [type(h) for h in logger.handlers] == [logging.handlers.RotatingFileHandler]
+        get_logger("test").info("still logged")
+        logger.handlers[0].flush()
+        assert "still logged" in (tmp_path / "agent.log").read_text(encoding="utf-8")
+    finally:
+        for handler in logger.handlers:
+            handler.close()
+        logger.handlers.clear()

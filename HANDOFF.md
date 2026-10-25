@@ -82,13 +82,25 @@
   - W5.1 Interrupt `409b086`: Esc flushes playback and drops the rest of the current reply (also before
     its first audio). Codex review caught the early-Esc gap; fixed and tested.
   - W5.3 wake_review `b2a6693`: `python scripts/wake_review.py --last`. Found "Roy" heard for "Leroy"
-    on gated turns. Cheapest fix: add "Roy" to wake_word_aliases (user setting, not changed).
+    on gated turns. "roy" is now in wake_word_aliases (user settings.json, outside the repo); boy, Troy,
+    joy, royal, hoy still do not match.
   - W5.2 frame budget `248f040`; W5.4 pill paint + Stop/End `7846821`. Gates: 661 passed, 3 skipped;
     ruff, mypy clean. GUI launched: Mini mode pill renders, Stop greyed while disconnected. Not connected live.
   - Stray empty `None` file appeared twice in the repo root (not from pytest or the render script;
-    likely trinity tooling). Moved to scratchpad. Watch for it.
+    likely trinity tooling). Moved to scratchpad. Watch for it. A `bool` one appeared at 20:22:36
+    while the GUI sat idle; re-running the tests did not reproduce it.
+- Console window on dev launch: uv 0.11.28 writes the same console-subsystem trampoline for
+  `.venv\Scripts\pythonw.exe` as for `python.exe` (it then runs base `python.exe`), so every
+  `pythonw main.py` opened a blank console. Local venv fix (not in git): old launcher renamed to
+  `pythonw.exe.uv-console`; base `pythonw.exe`, `python311.dll`, `python3.dll`, `vcruntime140*.dll`
+  copied into `.venv\Scripts`. Recreating the venv or a uv Python patch upgrade (the `home` junction
+  moves) brings the bug back or leaves a stale DLL: redo the copy. Code side: `tools/shell.py` spawns
+  powershell/taskkill with CREATE_NO_WINDOW (no console flash per command under pythonw);
+  `obs/logging_setup.py` skips the stderr handler when `sys.stderr` is None. Verified: test instance
+  via pythonw has no conhost; run_command under pythonw returns output with a hidden console.
+  The installed build (`packaging/gemini-live-agent.spec`) is still `console=True`.
 - NEXT: live voice session: Esc mid-reply, pill Stop/Hold/approvals, frame quality at 1568 px for
-  click accuracy. Consider alias "Roy" for wake word "Leroy".
+  click accuracy.
 
 ## Previous handoff — 24 October 2026 (historical)
 
