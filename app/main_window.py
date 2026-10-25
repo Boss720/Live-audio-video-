@@ -154,6 +154,7 @@ class MainWindow(QMainWindow):
         self._strip.diagnostics_requested.connect(self._show_diagnostics)
         self._pill.open_requested.connect(self._exit_mini_mode)
         self._pill.stop_requested.connect(self._on_disconnect_requested)
+        self._pill.interrupt_requested.connect(self._interrupt)
         self._pill.approve_requested.connect(self._pill_approve)
         self._pill.deny_requested.connect(self._pill_deny)
         self._pill.screen_toggled.connect(self._pill_screen_toggled)

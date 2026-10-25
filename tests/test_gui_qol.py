@@ -445,5 +445,6 @@ def test_interrupt_sends_command_only_when_connected(window: MainWindow) -> None
     bridge = _RecordingBridge()
     window._bridge = cast(Bridge, bridge)
     window._interrupt()
-    assert bridge.commands == [Interrupt()]
+    window._pill.interrupt_requested.emit()
+    assert bridge.commands == [Interrupt(), Interrupt()]
     window._bridge = None

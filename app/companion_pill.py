@@ -2,8 +2,17 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QPointF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPaintEvent, QRadialGradient
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QColor,
+    QKeyEvent,
+    QLinearGradient,
+    QMouseEvent,
+    QPainter,
+    QPaintEvent,
+    QPen,
+    QRadialGradient,
+)
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -30,7 +39,7 @@ ORB_SIZE = 52
 TOAST_MS = 3000
 CAPTION_TEXT_WIDTH = 210
 CAPTION_LINES = 2
-_BORDER = "rgba(125, 211, 252, 0.30)"
+_BORDER = CYAN_400
 
 _BUTTON_QSS = (
     "QPushButton {{ color: {fg}; background: rgba(148, 197, 255, 0.10);"
@@ -98,6 +107,7 @@ class CompanionPill(QFrame):
     hold_released = Signal()
     screen_toggled = Signal(bool)
     stop_requested = Signal()
+    interrupt_requested = Signal()
     open_requested = Signal()
     approve_requested = Signal(str)
     deny_requested = Signal(str)
@@ -112,11 +122,11 @@ class CompanionPill(QFrame):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setFixedWidth(PILL_WIDTH)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # The body is painted in paintEvent: a translucent top-level window
+        # does not draw stylesheet backgrounds, so the pill would be see-through.
         self.setStyleSheet(
-            f"QFrame#companionPill {{ border: 1px solid {_BORDER}; border-radius: 22px;"
-            f" background: qlineargradient(x1:0, y1:0, x2:1, y2:1,"
-            f" stop:0 {NAVY_900}, stop:1 {NAVY_700}); }}"
-            f" QFrame#companionPill QLabel {{ color: {TEXT_PRIMARY}; background: transparent; }}"
+            f"QFrame#companionPill QLabel {{ color: {TEXT_PRIMARY}; background: transparent; }}"
         )
         self._state = ""
         self._model = ""
@@ -157,15 +167,25 @@ class CompanionPill(QFrame):
         acts = QHBoxLayout()
         acts.setSpacing(6)
         self._hold = self._button("pillHold", "Hold", TEXT_PRIMARY)
+        self._interrupt = self._button("pillInterrupt", "Stop", TEXT_PRIMARY)
+        self._interrupt.setToolTip("Stop talking (Esc)")
         self._screen = self._button("pillScreen", "Screen", TEXT_PRIMARY)
         self._screen.setCheckable(True)
-        self._stop = self._button("pillStop", "Stop", DANGER)
+        self._stop = self._button("pillStop", "End", DANGER)
+        self._stop.setToolTip("End session")
         self._open = self._button("pillOpen", "Open", TEXT_PRIMARY)
-        for btn in (self._hold, self._screen, self._stop, self._open):
+        for btn in (
+            self._hold,
+            self._interrupt,
+            self._screen,
+            self._stop,
+            self._open,
+        ):
             acts.addWidget(btn, 1)
         root.addLayout(acts)
         self._hold.pressed.connect(self.hold_pressed)
         self._hold.released.connect(self.hold_released)
+        self._interrupt.clicked.connect(self.interrupt_requested)
         self._screen.toggled.connect(self.screen_toggled)
         self._stop.clicked.connect(self.stop_requested)
         self._open.clicked.connect(self.open_requested)
@@ -251,6 +271,7 @@ class CompanionPill(QFrame):
         colour = SUCCESS if connected else TEXT_MUTED
         self._conn_dot.setStyleSheet(f"color: {colour}; font-size: 10px;")
         self._conn_dot.setToolTip("Connected" if connected else "Disconnected")
+        self._interrupt.setEnabled(connected)
 
     def set_screen_checked(self, checked: bool) -> None:
         was = self._screen.blockSignals(True)
@@ -310,10 +331,33 @@ class CompanionPill(QFrame):
         if self._pending:
             self.deny_requested.emit(self._pending[0].call_id)
 
-    # -- drag --
+    # -- painting --
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # Half-pixel inset keeps the 1 px border crisp on the pixel grid.
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
+        gradient.setColorAt(0, QColor(NAVY_900))
+        gradient.setColorAt(1, QColor(NAVY_700))
+        painter.setBrush(gradient)
+        painter.setPen(QPen(QColor(_BORDER), 1))
+        painter.drawRoundedRect(rect, 22, 22)
+        painter.end()
+
+    # -- keyboard / drag --
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.interrupt_requested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
+            self.setFocus()
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             event.accept()
             return

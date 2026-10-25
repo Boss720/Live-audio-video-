@@ -153,3 +153,51 @@ def test_drag_moves_window(pill: CompanionPill) -> None:
     QTest.mouseMove(pill, QPoint(45, 35))
     QTest.mouseRelease(pill, Qt.MouseButton.LeftButton, none, QPoint(45, 35))
     assert pill.frameGeometry().topLeft() != start
+
+def test_interrupt_button(pill: CompanionPill, qtbot: QtBot) -> None:
+    btn = _btn(pill, "pillInterrupt")
+    assert btn.text() == "Stop"
+    assert btn.toolTip() == "Stop talking (Esc)"
+    assert not btn.isEnabled()
+    pill.set_connected(True)
+    assert btn.isEnabled()
+    with qtbot.waitSignal(pill.interrupt_requested):
+        btn.click()
+    pill.set_connected(False)
+    assert not btn.isEnabled()
+
+
+def test_esc_emits_interrupt(pill: CompanionPill, qtbot: QtBot) -> None:
+    pill.setFocus()
+    with qtbot.waitSignal(pill.interrupt_requested):
+        QTest.keyClick(pill, Qt.Key.Key_Escape)
+    hold = _btn(pill, "pillHold")
+    hold.setFocus()
+    with qtbot.waitSignal(pill.interrupt_requested):
+        QTest.keyClick(hold, Qt.Key.Key_Escape)
+
+
+def test_stop_button_end_session(pill: CompanionPill, qtbot: QtBot) -> None:
+    btn = _btn(pill, "pillStop")
+    assert btn.toolTip() == "End session"
+    with qtbot.waitSignal(pill.stop_requested):
+        btn.click()
+
+
+def test_pill_border(pill: CompanionPill) -> None:
+    from PySide6.QtGui import QColor
+
+    from app.theme import CYAN_400
+
+    # The body and border are painted, not styled: a translucent top-level
+    # window ignores stylesheet backgrounds.
+    pill.resize(pill.sizeHint())
+    image = pill.grab().toImage()
+    mid = image.height() // 2
+    border = image.pixelColor(0, mid)
+    body = image.pixelColor(4, mid)
+    cyan = QColor(CYAN_400)
+    assert abs(border.green() - cyan.green()) < 40 and abs(border.blue() - cyan.blue()) < 40
+    assert body.alpha() == 255
+    assert body.blue() < 120  # dark navy, not see-through or white
+
