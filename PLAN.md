@@ -68,11 +68,12 @@ headless EOF in voice mode, wake-word false positives in real ASR.
 
 ### Wave 5 — interrupt, frame budget, wake review, pill polish (spec: `docs/wave5.md`)
 - [x] W5.1 `Interrupt` command, Esc / "Stop talking" (`409b086`). Fake-socket tests; not checked live.
-- [ ] W5.2 frame byte budget in `media/screen.py` (Codex), then wire `max_bytes` in `core/session.py`.
+- [x] W5.2 frame byte budget (`248f040`): 200 KB cap, quality -10 steps, floor 50. Real screen at
+  1568 px: 235 KB q82 -> 191 KB q72. Wired into stream + on-demand capture.
 - [x] W5.3 `scripts/wake_review.py` (`b2a6693`). First run on agent.log: 7 gated near misses, most
   "Roy" for "Leroy" (false negatives), 0 fuzzy addressed.
-- [ ] W5.4 pill polish: border, "Stop talking" button, Esc (Antigravity), then wire
-  `interrupt_requested` in `app/main_window.py`.
+- [x] W5.4 pill polish (`7846821`): body + border were never painted (translucent window ignores
+  stylesheet backgrounds); now painted. Stop (interrupt, Esc) + End buttons. Checked in the running GUI.
 
 ---
 

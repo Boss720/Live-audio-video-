@@ -83,7 +83,12 @@
     its first audio). Codex review caught the early-Esc gap; fixed and tested.
   - W5.3 wake_review `b2a6693`: `python scripts/wake_review.py --last`. Found "Roy" heard for "Leroy"
     on gated turns. Cheapest fix: add "Roy" to wake_word_aliases (user setting, not changed).
-- NEXT: finish W5.2 + W5.4, then a live GUI check of Esc interrupt and the pill.
+  - W5.2 frame budget `248f040`; W5.4 pill paint + Stop/End `7846821`. Gates: 661 passed, 3 skipped;
+    ruff, mypy clean. GUI launched: Mini mode pill renders, Stop greyed while disconnected. Not connected live.
+  - Stray empty `None` file appeared twice in the repo root (not from pytest or the render script;
+    likely trinity tooling). Moved to scratchpad. Watch for it.
+- NEXT: live voice session: Esc mid-reply, pill Stop/Hold/approvals, frame quality at 1568 px for
+  click accuracy. Consider alias "Roy" for wake word "Leroy".
 
 ## Previous handoff — 24 October 2026 (historical)
 
