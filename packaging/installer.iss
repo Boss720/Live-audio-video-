@@ -7,10 +7,10 @@
 ;   3. Compile:
 ;        "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\installer.iss
 ;
-; Output: dist\installer\gemini-live-agent-setup-0.3.0.exe
+; Output: dist\installer\gemini-live-agent-setup-0.3.1.exe
 
 #define AppName "Gemini Live Agent"
-#define AppVersion "0.3.0"
+#define AppVersion "0.3.1"
 #define AppExeName "gemini-live-agent.exe"
 ; Console twin for terminal mode; the main exe is windowed (no console).
 #define CliExeName "gemini-live-agent-cli.exe"

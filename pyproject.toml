@@ -1,6 +1,6 @@
 [project]
 name = "gemini-live-agent"
-version = "0.3.0"
+version = "0.3.1"
 description = "An agentic harness for Gemini Live with local computer access"
 requires-python = ">=3.11"
 dependencies = [
