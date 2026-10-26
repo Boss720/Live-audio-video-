@@ -678,3 +678,12 @@ Run `python -m build` and inspect the produced wheel. Confirm every runtime
 package (`app/`, `core/`, `media/`, `tools/`, `policy/`, `audit/`, `obs/`,
 `persist/`, `settings/`, `gemini_live_agent/`) is included, and fix the
 hatch `packages` target before writing the PyInstaller spec.
+
+## Windows release 0.3.1 - 26 October 2026
+- User authorized rebuilding the executable and installer and publishing to GitHub.
+- Release branch: codex/release-0.3.1, rebased onto origin/Leroy; preserved local skip-worktree README edits.
+- Version updated in pyproject.toml, packaging/version.txt, packaging/installer.iss.
+- Verification: 666 tests passed, 3 skipped; Ruff and scoped mypy passed (46 files).
+- Assets: dist/release-0.3.1/ (setup EXE, portable ZIP with GUI and CLI, SHA256SUMS.txt).
+- Build logs and bundled-source verification: build/release-0.3.1-*.
+- GUI/CLI smoke verification on build host required before publication; no new live Gemini or clean-machine installer validation.
