@@ -686,4 +686,5 @@ hatch `packages` target before writing the PyInstaller spec.
 - Verification: 666 tests passed, 3 skipped; Ruff and scoped mypy passed (46 files).
 - Assets: dist/release-0.3.1/ (setup EXE, portable ZIP with GUI and CLI, SHA256SUMS.txt).
 - Build logs and bundled-source verification: build/release-0.3.1-*.
-- GUI/CLI smoke verification on build host required before publication; no new live Gemini or clean-machine installer validation.
+- GUI rendered and CLI help exited successfully; 46 bundled modules matched source. All 237 portable files verified. No new live Gemini or clean-machine installer validation.
+- GitHub release: https://github.com/Boss720/Live-audio-video-/releases/tag/v0.3.1 (assets uploaded and hashes checked before publication).
